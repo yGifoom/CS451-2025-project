@@ -1,6 +1,6 @@
 #define _POSIX_C_SOURCE      199309L
 #include"pflx.h"
-#include"pflx_threads_entry.h"
+#include"threads_entry.h"
 #include"udp.h"
 #include"logger.h"
 #include<string.h>
@@ -16,8 +16,20 @@ const long MAX_DOWNQUEUE_SIZE = 100;
 // Sentinel used to wake and stop the sender loop
 #define PFLX_SHUTDOWN_SENTINEL ((void*)-1)
 
+static void* _send_wrapper(void* arg) {
+    pflx* p = (pflx*)arg;
+    int result = _pflx_send_routine(p);
+    return (void*)(intptr_t)result;
+}
+
+static void* _recv_wrapper(void* arg) {
+    pflx* p = (pflx*)arg;
+    int result = _pflx_recv_routine(p);
+    return (void*)(intptr_t)result;
+}
+
 int pflx_start(pflx* pflx){
-    _pflx_threads_entry* e = _thr_get(pflx, 1);
+    _threads_entry* e = _thr_get(pflx, 1);
     if (!e) return -1;
 
     // reset graceful stop flag
@@ -31,13 +43,17 @@ int pflx_start(pflx* pflx){
     pthread_mutex_unlock(&pflx->network_busy_mutex);
 
     // Start receiver first
-    if (pthread_create(&e->recv_tid, NULL, _recv_thread_main, pflx) != 0) {
+    thread_wrapper_args* recvArgs = thread_wrapper_args_init(_recv_wrapper, pflx, pflx);
+    if (!recvArgs || pthread_create(&e->recv_tid, NULL, generic_thread_wrapper, recvArgs) != 0) {
+        free(recvArgs);
         return -1;
     }
     e->recv_started = 1;
 
     // Start sender
-    if (pthread_create(&e->send_tid, NULL, _send_thread_main, pflx) != 0) {
+    thread_wrapper_args* sendArgs = thread_wrapper_args_init(_send_wrapper, pflx, pflx);
+    if (!sendArgs || pthread_create(&e->send_tid, NULL, generic_thread_wrapper, sendArgs) != 0) {
+        free(sendArgs);
         // rollback receiver
         pthread_cancel(e->recv_tid);
         pthread_join(e->recv_tid, NULL);
@@ -50,7 +66,7 @@ int pflx_start(pflx* pflx){
 }
 
 int pflx_stop(pflx* pflx){
-    _pflx_threads_entry* e = _thr_get(pflx, 0);
+    _threads_entry* e = _thr_get(pflx, 0);
     if (!e) return -1;
 
     // Request graceful stop
@@ -58,13 +74,18 @@ int pflx_stop(pflx* pflx){
 
     // Wake sender loop (if waiting on downQueue)
     if (e->send_started) {
-        // push a poison pill; queue stores pointer values
         (void)queue_push(pflx->downQueue, PFLX_SHUTDOWN_SENTINEL, sizeof(pflx_message*));
     }
 
-    // No need to wake recv loop (it uses a 1s timeout), just wait
-    if (e->send_started) { pthread_join(e->send_tid, NULL); e->send_started = 0; }
-    if (e->recv_started) { pthread_join(e->recv_tid, NULL); e->recv_started = 0; }
+    // Join threads BEFORE removing entry
+    if (e->send_started) { 
+        pthread_join(e->send_tid, NULL); 
+        e->send_started = 0; 
+    }
+    if (e->recv_started) { 
+        pthread_join(e->recv_tid, NULL); 
+        e->recv_started = 0; 
+    }
 
     _thr_remove(pflx);
     return 0;
@@ -163,7 +184,7 @@ int _pflx_send_routine(pflx* pflx){
             struct timespec ts = { .tv_sec = 0, .tv_nsec = CONGESTION_CONTROL }; // 10ms = 10000000
             nanosleep(&ts, NULL);
 
-            int ok = bst_set_lookup(pflx->nonConsequentAcks[index], msg_to_send->messageID);
+            int ok = bst_set_lookup(pflx->nonConsequentAcks[index], msg_to_send->messageID, NULL, NULL);
             if(ok || ack_read(&pflx->expectedConsequentAck[index]) > msg_to_send->messageID){
                 // already acked -> deliver
                 pflx_message* msgToUp = (pflx_message*)popped;
@@ -320,7 +341,8 @@ int _pflx_recv_routine(pflx* pflx){
 
                 size_t removed = bst_set_compact_consequent(
                     pflx->nonConsequentAcks[peer_index], 
-                    pflx->expectedConsequentAck[peer_index].value);
+                    pflx->expectedConsequentAck[peer_index].value,
+                NULL);
 
                 pflx->expectedConsequentAck[peer_index].value += removed + 1;
             } else if (ack_msg_id > pflx->expectedConsequentAck[peer_index].value) {
@@ -343,7 +365,7 @@ int _pflx_recv_routine(pflx* pflx){
                     continue;
                 }
 
-                int res = bst_set_add(pflx->nonConsequentAcks[peer_index], ack_msg_id);
+                int res = bst_set_add(pflx->nonConsequentAcks[peer_index], ack_msg_id, NULL, 0);
                 if(res == -1){
                     pflx_message_destroy(msg_recvd);
                     pthread_mutex_unlock(&pflx->expectedConsequentAck[peer_index].mutex);
@@ -391,7 +413,7 @@ int _pflx_recv_routine(pflx* pflx){
                 
                 size_t removed = bst_set_compact_consequent(
                     pflx->nonConsequentAcks[origin_index],
-                    expectedConsequentId);
+                    expectedConsequentId, NULL);
 
                 pflx->expectedConsequentAck[origin_index].value += removed + 1;
 
@@ -400,7 +422,7 @@ int _pflx_recv_routine(pflx* pflx){
                 delivered = 1;
             }else if(expectedConsequentId < msgMessageID){
                 // non consequent, let's save it
-                int res = bst_set_add(pflx->nonConsequentAcks[origin_index], msgMessageID);
+                int res = bst_set_add(pflx->nonConsequentAcks[origin_index], msgMessageID, NULL, 0);
                 if (res == -1){
                     pthread_mutex_unlock(&pflx->expectedConsequentAck[origin_index].mutex);
                     return res;

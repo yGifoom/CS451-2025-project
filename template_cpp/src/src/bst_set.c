@@ -71,11 +71,13 @@ static bst_node* insert_helper(bst_node* node, size_t key, int* status, void* da
         *status = 0;
         bst_node* new_node = create_node(key);
         if (new_node && data && data_size > 0) {
-            new_node->data = malloc(data_size);
-            if (new_node->data) {
+            if ( data_size != 0 || new_node->data != NULL) {
+                new_node->data = malloc(data_size);
                 memcpy(new_node->data, data, data_size);
-                new_node->data_size = data_size;
+            } else{
+                new_node->data = NULL; 
             }
+            new_node->data_size = data_size;
         } else if (new_node) {
             new_node->data = NULL;
             new_node->data_size = 0;
@@ -210,8 +212,8 @@ static int lookup_helper(bst_node* node, size_t key, void** data, size_t* data_s
     if (!node) return 0;
     
     if (key == node->key){
-        *data = node->data;
-        *data_size = node->data_size;
+        if (data != NULL)*data = node->data;
+        if(data_size != NULL)*data_size = node->data_size;
         return 1;
     } 
     if (key < node->key) return lookup_helper(node->left, key, data, data_size);

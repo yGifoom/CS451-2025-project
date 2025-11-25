@@ -4,7 +4,7 @@
 #include "../include_tests/tests.h"
 #include"node.h"
 
-const int TESTING = 1;
+const int TESTING = 0;
 
 void tests(char* res, Parser* parser){
     /*
@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     else{
-        /*
+        
         // Get host information from parser
         size_t hosts_count;
         const Host* hosts = parser_get_hosts(parser, &hosts_count);
@@ -134,7 +134,7 @@ int main(int argc, char** argv) {
         node_loop(node);
 
         printf("loop finished!\n");
-        */
+        
     }
 
     printf("main has finished\n");
