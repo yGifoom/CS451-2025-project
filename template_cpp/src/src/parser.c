@@ -157,11 +157,16 @@ int parser_parse(Parser* parser) {
         // Parse config file
         FILE* config = fopen(parser->config_path, "r");
         if (config) {
-            if (fscanf(config, "%zu %zu", &parser->num_messages, &parser->num_nodes) != 2) {
+            // Try to read two numbers first (Perfect Links format)
+            // If only one number exists (FIFO format), num_nodes will remain 0
+            int items_read = fscanf(config, "%zu %zu", &parser->num_messages, &parser->num_nodes);
+            if (items_read < 1) {
                 fprintf(stderr, "Invalid config file format\n");
                 fclose(config);
                 return -1;
             }
+            // If only one number was read, num_nodes stays 0 (FIFO mode)
+            // If two numbers were read, both are set (Perfect Links mode)
             fclose(config);
         }
     }

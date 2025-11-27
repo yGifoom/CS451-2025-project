@@ -3,13 +3,13 @@
 
 #include<udp.h>
 #include<logger.h>
-#include<pflx.h>
+#include<fifo.h>
 
 typedef struct{
     size_t processId;
     size_t nextMessageId;
     size_t nOfMessages;
-    pflx* socket;
+    fifo* socket;
 
     Logger* logger;
 }Node;

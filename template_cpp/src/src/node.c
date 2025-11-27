@@ -1,5 +1,6 @@
 #include"node.h"
 #include"pflx.h"
+#include"fifo.h"
 #include"udp.h"
 #include"parser.h"
 #include<stdlib.h>
@@ -41,7 +42,8 @@ static void stop(int sig) {
     }
 
     // stop network
-    pflx_stop(g_current_node->socket);
+    pflx_stop(g_current_node->socket->pflx_layer);
+    fifo_stop(g_current_node->socket);
     
     exit(0);
 }
@@ -63,132 +65,102 @@ int node_loop(Node *node) {
     char* res;
     int lenMessage;
     time_t last_flush = time(NULL);
-    // Receiver is the LAST process (highest ID)
-    size_t recvId = node->socket->phonebook_size;  // This is 1-based (e.g., if 2 hosts, receiver is ID 2)
     // reciever expects n-1 senders
-    size_t maxExpectedMess = (recvId - 1) * node->nOfMessages;
+    size_t expectedMsgs = node->socket->pflx_layer->phonebook_size * node->nOfMessages;
 
     // interrupt signals
     signal(SIGTERM, stop);
     signal(SIGINT, stop);
 
     //start the network interface
-    pflx_start(node->socket);
+    fifo_start(node->socket);
+    pflx_start(node->socket->pflx_layer);
     //////////////////////////////////////////
     if(node->logger->debug == 1){
         logger_add(node->logger, "BEGIN");
-        snprintf(logBuffer, sizeof(logBuffer), "My process ID: %zu, Receiver ID: %zu", node->processId, recvId);
+        snprintf(logBuffer, sizeof(logBuffer), "My process ID: %zu", node->processId);
         logger_add(node->logger, logBuffer);
-        snprintf(logBuffer, sizeof(logBuffer), "port number: %d", ntohs(node->socket->udpSocket->addr.sin_port));
+        snprintf(logBuffer, sizeof(logBuffer), "port number: %d", ntohs(node->socket->pflx_layer->udpSocket->addr.sin_port));
         logger_add(node->logger, logBuffer);
         logger_flush(node->logger);
     }
     while (1) {
-        // check if node is the reciever
-        if(node->processId == recvId){
-            if(DEBUG == 1){
-                logger_add(node->logger, "Receiver waiting for message...");
+        // reciever behaviour
+        if(DEBUG == 1){
+            logger_add(node->logger, "Receiver waiting for message...");
+            logger_flush(node->logger);
+        }
+        int res = fifo_recv(node->socket, buffer, &lenRecvMessage);
+        if (res != 0){
+            if (res == ETIMEDOUT){
+                if(DEBUG == 1 && buffer != NULL){
+                    snprintf(logBuffer, sizeof(logBuffer), "fifo recv timed out!");
+                    logger_add(node->logger, logBuffer);
+                    logger_flush(node->logger);
+                }
+            } else{
+                if(DEBUG == 1 && buffer != NULL){
+                    snprintf(logBuffer, sizeof(logBuffer), "fifo recv returned an error, panic");
+                    logger_add(node->logger, logBuffer);
+                    logger_flush(node->logger);
+                }
+                return res;  
+            }
+        } else {
+            // Only process message if recv succeeded
+            if(DEBUG == 1 && buffer != NULL){
+                snprintf(logBuffer, sizeof(logBuffer), "recieved: '%s', len msg: '%zu'", (char* )buffer, lenRecvMessage);
+                logger_add(node->logger, logBuffer);
                 logger_flush(node->logger);
             }
-            int res = pflx_recv(node->socket, buffer, &lenRecvMessage);
-            if (res != 0){
-                if (res == ETIMEDOUT){
-                    if(DEBUG == 1 && buffer != NULL){
-                        snprintf(logBuffer, sizeof(logBuffer), "pflx recv timed out!");
-                        logger_add(node->logger, logBuffer);
-                        logger_flush(node->logger);
-                    }
+            if(buffer != NULL){
+                size_t senderId, msgId;
+                snprintf(logBuffer, sizeof(logBuffer), "d %s", (char* )buffer);
+                logger_add(node->logger, logBuffer);
+                if (sscanf((char*)buffer, "%zu %zu", &senderId, &msgId) == 2  
+                   && senderId >= node->processId){
+                    node->nextMessageId++;
                 } else{
-                    if(DEBUG == 1 && buffer != NULL){
-                        snprintf(logBuffer, sizeof(logBuffer), "pflx recv returned an error, panic");
-                        logger_add(node->logger, logBuffer);
-                        logger_flush(node->logger);
-                    }
-                    return res;  
+                    expectedMsgs--;
                 }
-            } else {
-                // Only process message if recv succeeded
-                if(DEBUG == 1 && buffer != NULL){
-                    snprintf(logBuffer, sizeof(logBuffer), "recieved: '%s', len msg: '%zu'", (char* )buffer, lenRecvMessage);
-                    logger_add(node->logger, logBuffer);
-                    logger_flush(node->logger);
-                }
-                if(buffer != NULL){
-                    snprintf(logBuffer, sizeof(logBuffer), "d %s", (char* )buffer);
-                    logger_add(node->logger, logBuffer);
-                    maxExpectedMess--;
-                }
-            }
-
-            if (pflx_network_status(node->socket) == 0 || maxExpectedMess == 0){
-                break;
             }
         }
-        // node is not reciever
-        else{
-            // should we add some more messages?
-            if (messagesSent < (node->nextMessageId - 1)){
-                // should never happen
-                return 1;
-            }
-            // Calculate how many messages are currently in the queue
-            size_t messages_in_queue = messagesSent - (node->nextMessageId - 1);
+        if (pflx_network_status(node->socket->pflx_layer) == 0 || expectedMsgs == 0){
+            break;
+        }
 
-            while (messages_in_queue < MAX_DOWN_QUEUE_SIZE && messagesSent < node->nOfMessages) {
-                snprintf((char*)buffer, BUFFER_SIZE, "%zu %zu", node->processId, messagesSent + 1);
+        // sender behaviour
+        // should we add some more messages?
+        if (messagesSent < (node->nextMessageId - 1)){
+            // should never happen
+            return 1;
+        }
+        // Calculate how many messages are currently in the queue
+        size_t messages_in_queue = messagesSent - (node->nextMessageId - 1);
+
+        while (messages_in_queue < MAX_DOWN_QUEUE_SIZE && messagesSent < node->nOfMessages) {
+            snprintf((char*)buffer, BUFFER_SIZE, "%zu %zu", node->processId, messagesSent + 1);
+
+            size_t msg_len = strlen((char*)buffer) + 1;
+            lenMessage = fifo_send(node->socket, buffer, msg_len, node->processId);
+            if(lenMessage < 0){
                 if(DEBUG == 1){
-                    snprintf(logBuffer, sizeof(logBuffer), "Sending to process %zu: %s", recvId, (char*)buffer);
+                    snprintf(logBuffer, sizeof(logBuffer), "error in fifoSend! returned %d", lenMessage);
                     logger_add(node->logger, logBuffer);
                     logger_flush(node->logger);
                 }
-
-                size_t msg_len = strlen((char*)buffer) + 1;
-                lenMessage = pflx_send(node->socket, buffer, msg_len, node->processId, recvId);
-                if(lenMessage < 0){
-                    if(DEBUG == 1){
-                        snprintf(logBuffer, sizeof(logBuffer), "error in pflxSend! returned %d", lenMessage);
-                        logger_add(node->logger, logBuffer);
-                        logger_flush(node->logger);
-                    }
-                    return lenMessage;
-                }
-                // log (has to deliver in order)
-                snprintf(logBuffer, sizeof(logBuffer), "b %zu", messagesSent + 1);
+                return lenMessage;
+            }
+            // log (has to deliver in order)
+            snprintf(logBuffer, sizeof(logBuffer), "b %zu", messagesSent + 1);
+            logger_add(node->logger, logBuffer);
+            if(DEBUG == 1){
+                snprintf(logBuffer, sizeof(logBuffer), "sent successfully (%d bytes)", lenMessage);
                 logger_add(node->logger, logBuffer);
-                if(DEBUG == 1){
-                    snprintf(logBuffer, sizeof(logBuffer), "sent successfully (%d bytes)", lenMessage);
-                    logger_add(node->logger, logBuffer);
-                    logger_flush(node->logger);
-                }
-                messagesSent++;
-                messages_in_queue++;
+                logger_flush(node->logger);
             }
-
-            // try to deliver own messages
-            int res = pflx_recv(node->socket, buffer, &lenRecvMessage);
-            if (res != 0){
-                if (res == ETIMEDOUT){
-                    if(DEBUG == 1 && buffer != NULL){
-                        snprintf(logBuffer, sizeof(logBuffer), "pflx recv timed out!");
-                        logger_add(node->logger, logBuffer);
-                        logger_flush(node->logger);
-                    }
-                }else {
-                    if(DEBUG == 1 && buffer != NULL){
-                        snprintf(logBuffer, sizeof(logBuffer), "pflx recv returned an error, panic");
-                        logger_add(node->logger, logBuffer);
-                        logger_flush(node->logger);
-                    }
-                    return res;  
-                } 
-            } else {
-                // deliver (delivered count is kept by this variable)
-                node->nextMessageId++;
-            }
-
-            if (node->nextMessageId > node->nOfMessages || pflx_network_status(node->socket) == 0){
-                break;
-            }
+            messagesSent++;
+            messages_in_queue++;
         }
         
         time_t now = time(NULL);
@@ -205,7 +177,8 @@ int node_loop(Node *node) {
         logger_flush(node->logger);
     }
     
-    pflx_stop(node->socket); // might destroy this before it can stop gracefully
+    pflx_stop(node->socket->pflx_layer); // might destroy this before it can stop gracefully
+    fifo_stop(node->socket);
     free(buffer);
     node_destroy(node);
     
@@ -226,14 +199,15 @@ Node* node_init(
     node->nextMessageId = 1;
     node->nOfMessages = nOfMessages;
     // phonebook is indexed at 0, process ids from 1
-    node->socket = pflx_init(ntohs(phonebook[processId-1].port), phonebook, phonebook_size);
+    pflx* pflx_socket = pflx_init(ntohs(phonebook[processId-1].port), phonebook, phonebook_size);
+    node->socket = fifo_init(pflx_socket);
     node->logger = logger_init(logfile, DEBUG);
     return node;
 }
 
 int node_destroy(Node *node) {
     logger_destroy(node->logger);
-    pflx_destroy(node->socket);
+    fifo_destroy(node->socket);
     free(node);
 
     return 0;

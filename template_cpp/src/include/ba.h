@@ -37,5 +37,15 @@ size_t ba_where_1(ba* ba, size_t** indexes_1s, size_t* count_1s);
 // Returns number of 0s found, fills indexes_0s array (caller must free)
 size_t ba_where_0(ba* ba, size_t** indexes_0s, size_t* count_0s);
 
+// unsafe copy bit array to a buffer
+void* ba_unsafe_copy(ba* ba);
+
+// not implemented
+// construct a bit array starting from a 
+// buffer of 1s & 0s
+ba* ba_construct(void* bits, size_t bitsLen);
+
+void ba_merge(ba* dest, ba* add);
+
 #endif
 

@@ -9,9 +9,11 @@ from collections import defaultdict
 def read_config(config_file):
     """Parse config file to extract parameters."""
     with open(config_file, 'r') as f:
-        lines = [line.strip() for line in f if line.strip()]
+        lines = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
     
-    # Try to parse as Perfect Links format first: num_messages num_processes
+    # Parse first line: num_messages [num_processes]
+    # For FIFO: only num_messages
+    # For Perfect Links: num_messages num_processes
     parts = lines[0].split()
     num_messages = int(parts[0])
     num_processes = int(parts[1]) if len(parts) > 1 else None
@@ -153,6 +155,15 @@ def check_perfect_links(config, hosts_file, output_dir):
     process_ids = read_hosts(hosts_file)
     num_processes_actual = len(process_ids)
     
+    # Validate that config specifies num_processes (required for Perfect Links)
+    if num_processes_config is None:
+        return {
+            "Configuration Error": [
+                f"Config file must specify number of processes for Perfect Links algorithm",
+                f"Expected format: num_messages num_processes"
+            ]
+        }
+    
     # Validate that config and hosts file match
     if num_processes_config != num_processes_actual:
         return {
@@ -202,12 +213,13 @@ def check_fifo_broadcast(config, hosts_file, output_dir):
     for process_id in process_ids:
         output_file = Path(output_dir) / f"proc_{process_id}.output"
         
+        # Initialize even if file doesn't exist
+        broadcasts[process_id] = []
+        deliveries[process_id] = defaultdict(list)
+        
         if not output_file.exists():
             all_errors[f"Process {process_id}"] = [f"Output file not found: {output_file}"]
             continue
-        
-        broadcasts[process_id] = []
-        deliveries[process_id] = defaultdict(list)
         
         with open(output_file, 'r') as f:
             line_num = 0
@@ -266,6 +278,9 @@ def check_fifo_broadcast(config, hosts_file, output_dir):
     
     # Check each process
     for process_id in process_ids:
+        if f"Process {process_id}" in all_errors and "Output file not found" in all_errors[f"Process {process_id}"][0]:
+            continue  # Skip if file doesn't exist
+        
         if f"Process {process_id}" in all_errors:
             continue  # Skip if already has parsing errors
         
@@ -325,12 +340,17 @@ def check_fifo_broadcast(config, hosts_file, output_dir):
     # Collect all (sender_id, msg_id) pairs that were delivered by at least one process
     all_delivered = set()
     for process_id in process_ids:
+        if process_id not in deliveries:
+            continue
         for sender_id, msgs in deliveries[process_id].items():
             for msg_id in msgs:
                 all_delivered.add((sender_id, msg_id))
     
     # Check each process has delivered all messages
     for process_id in process_ids:
+        if f"Process {process_id}" in all_errors and "Output file not found" in str(all_errors[f"Process {process_id}"]):
+            continue  # Skip missing processes
+        
         errors = all_errors.get(f"Process {process_id}", [])
         
         for sender_id, msg_id in all_delivered:
@@ -349,6 +369,9 @@ def check_fifo_broadcast(config, hosts_file, output_dir):
             for receiver_id in process_ids:
                 if receiver_id == sender_id:
                     continue  # Don't check self-delivery
+                
+                if receiver_id not in deliveries:
+                    continue  # Skip if receiver has no deliveries recorded
                 
                 if msg_id not in deliveries[receiver_id].get(sender_id, []):
                     if f"Process {receiver_id}" not in all_errors:

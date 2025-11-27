@@ -75,10 +75,10 @@ fi
 # Array to store PIDs
 declare -a PIDS
 
-# Read the second number to get number of processes (from first non-empty, non-comment line)
-NUM_PROCESSES=$(awk 'NF && $1 !~ /^#/ {print $2; exit}' "$CONFIG_FILE")
+# Read number of processes from hosts file (count non-empty, non-comment lines)
+NUM_PROCESSES=$(awk 'NF && $1 !~ /^#/' "$HOSTS_FILE" | wc -l)
 if ! [[ "$NUM_PROCESSES" =~ ^[0-9]+$ ]] || [ "$NUM_PROCESSES" -eq 0 ]; then
-    echo "Error: could not read valid process count (2nd number) from $CONFIG_FILE"
+    echo "Error: Could not determine number of processes from hosts file $HOSTS_FILE"
     exit 1
 fi
 

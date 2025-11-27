@@ -109,12 +109,17 @@ size_t ba_sum(ba* bit_array) {
 }
 
 size_t ba_where_1(ba* bit_array, size_t** indexes_1s, size_t* count_1s) {
-    if (!bit_array || !indexes_1s || !count_1s) {
+    if (!bit_array) {
         return 0;
     }
     
     // First pass: count the number of 1s
     size_t count = ba_sum(bit_array);
+
+    // return if caller doesn't specify return arraypointer
+    if (!indexes_1s || !count_1s){
+        return count;
+    }
     
     *count_1s = count;
     
@@ -171,3 +176,41 @@ size_t ba_where_0(ba* bit_array, size_t** indexes_0s, size_t* count_0s) {
     
     return count;
 }
+
+void* ba_unsafe_copy(ba* ba){
+    if (ba == NULL){
+        return NULL;
+    }
+
+    size_t block_size = BITS_PER_BLOCK / 8;
+    void* bits = malloc(ba->num_blocks * block_size);
+    if (!bits) {
+        return NULL;
+    }
+
+    unsigned char* dest = (unsigned char*)bits;
+    
+    for(size_t i = 0; i < ba->num_blocks; i++){
+        uint64_t value = atomic_load_explicit(&ba->bits[i], memory_order_relaxed);
+        memcpy(&dest[i * block_size], &value, block_size);
+    }
+
+    return bits;
+}
+
+ba* ba_construct(void* bits, size_t bitsLen){
+    return NULL;
+}
+
+void ba_merge(ba* dest, ba* add){
+    for(size_t i = 0; i < dest->num_blocks; i++){
+        // Load value from 'add' array
+        uint64_t value = atomic_load_explicit(&add->bits[i], memory_order_relaxed);
+        
+        // Atomically OR it into dest
+        atomic_fetch_or_explicit(&dest->bits[i], value, memory_order_relaxed);
+    }
+    
+    return;
+}
+

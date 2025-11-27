@@ -9,10 +9,10 @@
 #include <errno.h>
 #include<time.h>
 
-const int CONGESTION_CONTROL = 0;
-const int BUFFERSIZE = 256;
-const long TIMEOUT_QUEUE_POP = 1000; // in ms
-const long MAX_DOWNQUEUE_SIZE = 100;
+static const int CONGESTION_CONTROL = 0;
+static const int BUFFERSIZE = 256;
+static const long TIMEOUT_QUEUE_POP = 1000; // in ms
+static const long MAX_DOWNQUEUE_SIZE = 100;
 // Sentinel used to wake and stop the sender loop
 #define PFLX_SHUTDOWN_SENTINEL ((void*)-1)
 
@@ -156,6 +156,9 @@ int _pflx_send_routine(pflx* pflx){
         const size_t hdr_size = hdr_words * sizeof(size_t);
         if (hdr_size + msg_to_send->messageSize > (size_t)BUFFERSIZE) {
             // Too large to fit, drop or truncate; here we drop quietly.
+            printf("%d-PFLX SEND ROUTINE: message too large (%zu bytes), dropping\n",
+                   pflx->udpSocket->sockfd, hdr_size + msg_to_send->messageSize);
+            fflush(stdout);
             continue;
         }
         size_t* hdr = (size_t*)frame;
@@ -167,6 +170,10 @@ int _pflx_send_routine(pflx* pflx){
         
         size_t frame_size = hdr_size + msg_to_send->messageSize;
 
+        printf("%d-PFLX SEND ROUTINE: frame_size=%zu, hdr_size=%zu, payload=%zu\n",
+               pflx->udpSocket->sockfd, frame_size, hdr_size, msg_to_send->messageSize);
+        fflush(stdout);
+
         // check if message was ack
         if (msg_to_send->message && 
             sscanf((char*)msg_to_send->message, "ack %zu", &ack_msg_id) == 1) {
@@ -175,9 +182,9 @@ int _pflx_send_routine(pflx* pflx){
                                     pflx->phonebook[index].ip_readable, 
                                     ntohs(pflx->phonebook[index].port), 
                                     frame, frame_size);
-            if (lenMessageSent < 0){
-                // send failed, we might want to handle it
-            }
+            printf("%d-PFLX SEND ROUTINE: ACK sent, udp_send returned %d (expected %zu)\n",
+                   pflx->udpSocket->sockfd, lenMessageSent, frame_size);
+            fflush(stdout);
         } else {
             // strictly sender behaviour
             // sleep for a little bit as to not overwhelm the network
@@ -196,6 +203,10 @@ int _pflx_send_routine(pflx* pflx){
                                     pflx->phonebook[index].ip_readable, 
                                     ntohs(pflx->phonebook[index].port), 
                                     frame, frame_size);
+
+                printf("%d-PFLX SEND ROUTINE: DATA sent, udp_send returned %d (expected %zu)\n",
+                       pflx->udpSocket->sockfd, lenMessageSent, frame_size);
+                fflush(stdout);
 
                 // put message back in, we will be waiting for ack
                 res = queue_push(pflx->downQueue, msg_to_send, sizeof(pflx_message*));
@@ -248,8 +259,10 @@ int _pflx_recv_routine(pflx* pflx){
             break;
         }
 
-        ssize_t len = udp_recv_timeout(pflx->udpSocket, buffer, BUFFERSIZE, 1000); // 1 second timeout
-        printf("%d-PFLX RECV ROUTINE: just udp recvd wh result %ld\n", pflx->udpSocket->sockfd, len); fflush(stdout);
+        ssize_t len = udp_recv_timeout(pflx->udpSocket, buffer, BUFFERSIZE, 1000);
+        printf("%d-PFLX RECV ROUTINE: udp_recv_timeout returned %ld bytes\n",
+               pflx->udpSocket->sockfd, len);
+        fflush(stdout);
         
         if (len == 0) {
             // Timeout occurred
@@ -281,10 +294,18 @@ int _pflx_recv_routine(pflx* pflx){
         size_t messageID = hdr[1];
         size_t targetID = hdr[2];
         size_t payloadSize = hdr[3];
+        
+        printf("%d-PFLX RECV ROUTINE: parsed header - originID=%zu, msgID=%zu, targetID=%zu, payloadSize=%zu\n",
+               pflx->udpSocket->sockfd, originID, messageID, targetID, payloadSize);
+        printf("%d-PFLX RECV ROUTINE: expected total=%zu, actual len=%ld, difference=%ld\n",
+               pflx->udpSocket->sockfd, hdr_size + payloadSize, len, (long)(hdr_size + payloadSize) - len);
+        fflush(stdout);
+        
         if (hdr_size + payloadSize != (size_t)len) {
             // malformed, ignore
-            printf("%d-PFLX RECV ROUTINE: malformed message\n", pflx->udpSocket->sockfd); fflush(stdout);
-
+            printf("%d-PFLX RECV ROUTINE: SIZE MISMATCH! hdr_size=%zu + payloadSize=%zu = %zu, but received %ld bytes\n",
+                   pflx->udpSocket->sockfd, hdr_size, payloadSize, hdr_size + payloadSize, len);
+            fflush(stdout);
             continue;
         }
         printf("%d-PFLX RECV ROUTINE: recreating message from frame\n", pflx->udpSocket->sockfd); fflush(stdout);
@@ -301,9 +322,9 @@ int _pflx_recv_routine(pflx* pflx){
         size_t senderId, msgId;
 
         printf("%d-PFLX RECV ROUTINE: entering main logic\n", pflx->udpSocket->sockfd); fflush(stdout);
-        // Check if it's an ACK
+        // Check if it's an ACK //TODO: this is a terrible implementation, but fixing it
+        // requires changing pflx message
         if (msg_recvd->message && sscanf((char*)msg_recvd->message, "ack %zu", &ack_msg_id) == 1) {
-            // sender logic
             // Use the peer index (origin of ACK), not our own ID
             size_t peer_index = origin_index;
 
@@ -378,10 +399,7 @@ int _pflx_recv_routine(pflx* pflx){
             continue;
 
         // Try to parse as two integers separated by whitespace
-        } else if (msg_recvd->message &&
-                   sscanf((char*)msg_recvd->message, "%zu %zu", &senderId, &msgId) == 2  
-                   && senderId >= 1 && senderId < pflx->phonebook_size 
-                   && msgId > 0){
+        } else if (msg_recvd->message){
             printf("%d-PFLX RECV ROUTINE: recvd message '%s', from %zu\n", pflx->udpSocket->sockfd, (char*)msg_recvd->message, senderId); fflush(stdout);
             // strictly reciever behaviour
             // copy values we'll need
@@ -456,8 +474,8 @@ int _pflx_recv_routine(pflx* pflx){
             continue;
         } else {
             // If not ACK and not parsable payload, drop silently
-            printf("%d-PFLX RECV ROUTINE: recieved garbage: '%s'\n",
-                   pflx->udpSocket->sockfd, (char*)msg_recvd->message); fflush(stdout);
+            printf("%d-PFLX RECV ROUTINE: recieved null message\n",
+                   pflx->udpSocket->sockfd); fflush(stdout);
             pflx_message_destroy(msg_recvd);
             continue;
         }
