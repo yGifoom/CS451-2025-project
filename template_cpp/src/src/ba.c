@@ -199,7 +199,37 @@ void* ba_unsafe_copy(ba* ba){
 }
 
 ba* ba_construct(void* bits, size_t bitsLen){
-    return NULL;
+    if (!bits || bitsLen == 0) {
+        return NULL;
+    }
+    
+    // Allocate the ba structure
+    ba* bit_array = (ba*)malloc(sizeof(ba));
+    if (!bit_array) {
+        return NULL;
+    }
+    
+    bit_array->length = bitsLen;
+    bit_array->num_blocks = (bitsLen + BITS_PER_BLOCK - 1) / BITS_PER_BLOCK;
+    
+    // Allocate memory for atomic blocks
+    bit_array->bits = (atomic_uint_fast64_t*)calloc(bit_array->num_blocks, sizeof(atomic_uint_fast64_t));
+    if (!bit_array->bits) {
+        free(bit_array);
+        return NULL;
+    }
+    
+    // Copy the raw bits into the atomic blocks
+    uint8_t block_size = BITS_PER_BLOCK / 8; // 8 bytes per block
+    unsigned char* src = (unsigned char*)bits;
+    
+    for (uint8_t i = 0; i < bit_array->num_blocks; i++) {
+        uint64_t value;
+        memcpy(&value, &src[i * block_size], block_size);
+        atomic_init(&bit_array->bits[i], value);
+    }
+    
+    return bit_array;
 }
 
 void ba_merge(ba* dest, ba* add){

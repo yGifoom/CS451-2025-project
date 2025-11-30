@@ -127,7 +127,6 @@ int _pflx_send_routine(pflx* pflx){
             break;
         }
 
-        //printf("%d-PFLX SEND ROUTINE: sending new message\n", pflx->udpSocket->sockfd); fflush(stdout);
         // pop a pflx_message* (not reusing 'frame' as holder)
         void* popped = NULL;
         int res = queue_pop_timed(pflx->downQueue, &popped, &dataSize, TIMEOUT_QUEUE_POP);
@@ -182,9 +181,9 @@ int _pflx_send_routine(pflx* pflx){
                                     pflx->phonebook[index].ip_readable, 
                                     ntohs(pflx->phonebook[index].port), 
                                     frame, frame_size);
-            printf("%d-PFLX SEND ROUTINE: ACK sent, udp_send returned %d (expected %zu)\n",
-                   pflx->udpSocket->sockfd, lenMessageSent, frame_size);
-            fflush(stdout);
+
+            // ACKs are local protocol control messages; free the message capsule
+            pflx_message_destroy(msg_to_send);
         } else {
             // strictly sender behaviour
             // sleep for a little bit as to not overwhelm the network
@@ -260,8 +259,9 @@ int _pflx_recv_routine(pflx* pflx){
         }
 
         ssize_t len = udp_recv_timeout(pflx->udpSocket, buffer, BUFFERSIZE, 1000);
+
         printf("%d-PFLX RECV ROUTINE: udp_recv_timeout returned %ld bytes\n",
-               pflx->udpSocket->sockfd, len);
+                pflx->udpSocket->sockfd, len);
         fflush(stdout);
         
         if (len == 0) {
@@ -319,7 +319,6 @@ int _pflx_recv_routine(pflx* pflx){
         size_t ack_msg_id;
         size_t origin_index = msg_recvd->originID - 1;
         size_t target_index = msg_recvd->targetID - 1;
-        size_t senderId, msgId;
 
         printf("%d-PFLX RECV ROUTINE: entering main logic\n", pflx->udpSocket->sockfd); fflush(stdout);
         // Check if it's an ACK //TODO: this is a terrible implementation, but fixing it
@@ -400,7 +399,7 @@ int _pflx_recv_routine(pflx* pflx){
 
         // Try to parse as two integers separated by whitespace
         } else if (msg_recvd->message){
-            printf("%d-PFLX RECV ROUTINE: recvd message '%s', from %zu\n", pflx->udpSocket->sockfd, (char*)msg_recvd->message, senderId); fflush(stdout);
+            printf("%d-PFLX RECV ROUTINE: recvd message '%s', from %zu\n", pflx->udpSocket->sockfd, (char*)msg_recvd->message, msg_recvd->originID); fflush(stdout);
             // strictly reciever behaviour
             // copy values we'll need
             size_t msgOriginID =  msg_recvd->originID;
