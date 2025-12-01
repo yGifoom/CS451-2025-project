@@ -1069,6 +1069,9 @@ void testFifo(char* res, Parser* parser) {
                 size_t recv_sender = 0, msg_id = 0;
                 if (sscanf(recv_buf, "%zu %zu", &recv_sender, &msg_id) == 2) {
                     delivered_p2[count_p2++] = msg_id;
+                    printf("FIFO TEST: p2 just delivered %zu\n", msg_id);fflush(stdout);
+                }else{
+                    printf("FIFO TEST: this is delivered message '%d'\n", *(int*)recv_buf);fflush(stdout);
                 }
             }
         }
