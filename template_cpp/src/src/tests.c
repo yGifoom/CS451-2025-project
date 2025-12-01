@@ -1174,7 +1174,7 @@ void testFifo(char* res, Parser* parser) {
     size_t delivery_counts[3][3] = {{0}};
     
     iterations = 0;
-    max_iterations = NUM_MESSAGES * 3 * 300;
+    max_iterations = NUM_MESSAGES * 3 * 3;
     size_t total_expected = NUM_MESSAGES * 3 * 3; // 3 senders * 3 receivers * NUM_MESSAGES
     size_t total_delivered = 0;
     
@@ -1237,4 +1237,5 @@ void testFifo(char* res, Parser* parser) {
     fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
     
     strcpy(res, "pass");
+    return;
 }

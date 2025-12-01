@@ -86,6 +86,7 @@ typedef struct{
     size_t messageID;
 
     size_t targetID;
+    int retries;
 } pflx_message;
 
 // initializes message in the pflx format

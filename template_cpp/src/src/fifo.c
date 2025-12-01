@@ -12,7 +12,7 @@
 #include<time.h>
 
 
-static const int CONGESTION_CONTROL = 1000000;
+static const int CONGESTION_CONTROL = 0;
 static const int BUFFERSIZE = 256;
 static const long TIMEOUT_QUEUE_POP = 1000; // in ms
 static const long MAX_DOWNQUEUE_SIZE = 100;
@@ -310,6 +310,7 @@ static unsigned char* fifo_make_frame(fifo_message* m, size_t* frameSize){
 size_t fifo_broadcast_missing(fifo* fifo, fifo_message* msgToBroadcast){
     printf("%d-FIFO BROADCAST: broadcasting message ID %zu from origin %zu\n", fifo->pid,
            msgToBroadcast->messageID, msgToBroadcast->originID); fflush(stdout);
+
     size_t originIdx = msgToBroadcast->originID - 1;
     fifo_message* Msg; size_t* missingProcesses; size_t sizeMissing;
     if (bst_set_lookup(fifo->id_tbd[originIdx], msgToBroadcast->messageID, (void**)&Msg, NULL) != 1) {
@@ -317,8 +318,18 @@ size_t fifo_broadcast_missing(fifo* fifo, fifo_message* msgToBroadcast){
         bst_set_add(fifo->id_tbd[originIdx], msgToBroadcast->messageID, msgToBroadcast, sizeof(fifo_message));
         Msg = msgToBroadcast;
     } else {
-        // Merge incoming acks into canonical bitmap only (one direction sufficient)
+        // broadcasting when no new acks have been recieved is expensive
+        
+        size_t nOfAcks = ba_sum(msgToBroadcast->acks);
+        if (ba_sum(Msg->acks) == nOfAcks){
+
+            printf("%d-FIFO BROADCAST: suspended broadcasting message ID %zu from origin %zu, no new acks\n", fifo->pid,
+            msgToBroadcast->messageID, msgToBroadcast->originID); fflush(stdout);
+            return msgToBroadcast->acks->length - nOfAcks;
+        }
+        // merge to msgToBroadcast for congestion control
         ba_merge(Msg->acks, msgToBroadcast->acks);
+        ba_merge(msgToBroadcast->acks, Msg->acks);
         // Use canonical for all subsequent computations
         msgToBroadcast = Msg;
     }
@@ -336,8 +347,6 @@ size_t fifo_broadcast_missing(fifo* fifo, fifo_message* msgToBroadcast){
     if (fifoFrame == NULL){
         return sizeMissing;
     }
-    printf("%d-FIFO BROADCAST: made frame with size %zu: originID:%zu, messageID:%zu, message size: %zu\n", fifo->pid, 
-        frameSize, hdr[0], hdr[2], hdr[3]); fflush(stdout);
 
     for (size_t i = 0; i < sizeMissing; i++){
         // MEMOPT: right now send memcopies, could save in one location and 

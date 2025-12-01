@@ -9,6 +9,7 @@
 #include <errno.h>
 #include<time.h>
 
+static const int PFLX_RETRIES = 10;
 static const int CONGESTION_CONTROL = 0;
 static const int BUFFERSIZE = 256;
 static const long TIMEOUT_QUEUE_POP = 1000; // in ms
@@ -145,7 +146,15 @@ int _pflx_send_routine(pflx* pflx){
         }
 
         pflx_message* msg_to_send = (pflx_message*)popped;
-
+        // dropping message if too many tries
+        /*if(msg_to_send->retries < 0){
+            printf("%d-PFLX SEND ROUTINE: message finished retries, dropping\n",
+                   pflx->udpSocket->sockfd);
+            fflush(stdout);
+            continue;
+        } else{
+            msg_to_send->retries--;
+        }*/
         size_t ack_msg_id;
         int lenMessageSent;
         size_t index = msg_to_send->targetID - 1;
@@ -241,7 +250,7 @@ int pflx_recv(pflx* pflx, void* message, size_t* messageSize){
 
     memcpy(message, msg->message, msg->messageSize);
     *messageSize = msg->messageSize;
-    printf("%d-I am recieving '%s', message of len '%zu'\n", pflx->udpSocket->sockfd, (char*)message, *messageSize); fflush(stdout);
+    printf("%d-PFLX RECV: I am recieving '%s', message of len '%zu'\n", pflx->udpSocket->sockfd, (char*)message, *messageSize); fflush(stdout);
     pflx_message_destroy(msg);
     return 0;
 }
@@ -606,6 +615,7 @@ pflx_message* pflx_message_init(void* message, size_t messageSize, size_t origin
     msg->originID = originID;
     msg->targetID = targetID;
 
+    msg->retries = PFLX_RETRIES;
     return msg;
 }
 
