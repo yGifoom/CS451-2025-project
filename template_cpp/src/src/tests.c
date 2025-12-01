@@ -1016,15 +1016,7 @@ void testFifo(char* res, Parser* parser) {
         if (pflx3) pflx_destroy(pflx3);
         return;
     }
-    
-    if (pflx_start(pflx1) != 0 || pflx_start(pflx2) != 0 || pflx_start(pflx3) != 0) {
-        strcpy(res, "fail - pflx start");
-        pflx_destroy(pflx1);
-        pflx_destroy(pflx2);
-        pflx_destroy(pflx3);
-        return;
-    }
-    
+
     // Initialize FIFO layers
     fifo* fifo1 = fifo_init(pflx1);
     fifo* fifo2 = fifo_init(pflx2);
@@ -1035,16 +1027,12 @@ void testFifo(char* res, Parser* parser) {
         if (fifo1) fifo_destroy(fifo1);
         if (fifo2) fifo_destroy(fifo2);
         if (fifo3) fifo_destroy(fifo3);
-        pflx_stop(pflx1); pflx_stop(pflx2); pflx_stop(pflx3);
-        pflx_destroy(pflx1); pflx_destroy(pflx2); pflx_destroy(pflx3);
         return;
     }
     
     if (fifo_start(fifo1) != 0 || fifo_start(fifo2) != 0 || fifo_start(fifo3) != 0) {
         strcpy(res, "fail - fifo start");
         fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-        pflx_stop(pflx1); pflx_stop(pflx2); pflx_stop(pflx3);
-        pflx_destroy(pflx1); pflx_destroy(pflx2); pflx_destroy(pflx3);
         return;
     }
     
@@ -1058,8 +1046,6 @@ void testFifo(char* res, Parser* parser) {
             strcpy(res, "fail - fifo_send");
             fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
             fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-            pflx_stop(pflx1); pflx_stop(pflx2); pflx_stop(pflx3);
-            pflx_destroy(pflx1); pflx_destroy(pflx2); pflx_destroy(pflx3);
             return;
         }
     }
@@ -1069,9 +1055,9 @@ void testFifo(char* res, Parser* parser) {
     size_t delivered_p3[NUM_MESSAGES];
     size_t count_p2 = 0, count_p3 = 0;
     
-    size_t max_iterations = NUM_MESSAGES * 200;
+    size_t max_iterations = NUM_MESSAGES * 2;
     size_t iterations = 0;
-    
+
     while ((count_p2 < NUM_MESSAGES || count_p3 < NUM_MESSAGES) && iterations < max_iterations) {
         // Try to receive from process 2
         if (count_p2 < NUM_MESSAGES) {
@@ -1110,8 +1096,6 @@ void testFifo(char* res, Parser* parser) {
         strcpy(res, "fail - not all messages delivered");
         fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
         fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-        pflx_stop(pflx1); pflx_stop(pflx2); pflx_stop(pflx3);
-        pflx_destroy(pflx1); pflx_destroy(pflx2); pflx_destroy(pflx3);
         return;
     }
     
@@ -1121,8 +1105,6 @@ void testFifo(char* res, Parser* parser) {
             strcpy(res, "fail - FIFO ordering violated");
             fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
             fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-            pflx_stop(pflx1); pflx_stop(pflx2); pflx_stop(pflx3);
-            pflx_destroy(pflx1); pflx_destroy(pflx2); pflx_destroy(pflx3);
             return;
         }
     }
@@ -1134,8 +1116,6 @@ void testFifo(char* res, Parser* parser) {
                 strcpy(res, "fail - duplicate delivery");
                 fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
                 fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-                pflx_stop(pflx1); pflx_stop(pflx2); pflx_stop(pflx3);
-                pflx_destroy(pflx1); pflx_destroy(pflx2); pflx_destroy(pflx3);
                 return;
             }
         }
@@ -1143,8 +1123,6 @@ void testFifo(char* res, Parser* parser) {
     
     fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
     fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-    pflx_stop(pflx1); pflx_stop(pflx2); pflx_stop(pflx3);
-    pflx_destroy(pflx1); pflx_destroy(pflx2); pflx_destroy(pflx3);
     
     // Test 2: Concurrent test - multiple broadcasters
     pflx1 = pflx_init(port1, hosts, hosts_count);
@@ -1159,8 +1137,6 @@ void testFifo(char* res, Parser* parser) {
         return;
     }
     
-    pflx_start(pflx1); pflx_start(pflx2); pflx_start(pflx3);
-    
     fifo1 = fifo_init(pflx1);
     fifo2 = fifo_init(pflx2);
     fifo3 = fifo_init(pflx3);
@@ -1170,8 +1146,6 @@ void testFifo(char* res, Parser* parser) {
         if (fifo1) fifo_destroy(fifo1);
         if (fifo2) fifo_destroy(fifo2);
         if (fifo3) fifo_destroy(fifo3);
-        pflx_stop(pflx1); pflx_stop(pflx2); pflx_stop(pflx3);
-        pflx_destroy(pflx1); pflx_destroy(pflx2); pflx_destroy(pflx3);
         return;
     }
     
@@ -1237,8 +1211,6 @@ void testFifo(char* res, Parser* parser) {
                 strcpy(res, "fail - concurrent: not all messages delivered");
                 fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
                 fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-                pflx_stop(pflx1); pflx_stop(pflx2); pflx_stop(pflx3);
-                pflx_destroy(pflx1); pflx_destroy(pflx2); pflx_destroy(pflx3);
                 return;
             }
         }
@@ -1252,8 +1224,6 @@ void testFifo(char* res, Parser* parser) {
                     strcpy(res, "fail - concurrent: FIFO ordering violated");
                     fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
                     fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-                    pflx_stop(pflx1); pflx_stop(pflx2); pflx_stop(pflx3);
-                    pflx_destroy(pflx1); pflx_destroy(pflx2); pflx_destroy(pflx3);
                     return;
                 }
             }
@@ -1262,8 +1232,6 @@ void testFifo(char* res, Parser* parser) {
     
     fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
     fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-    pflx_stop(pflx1); pflx_stop(pflx2); pflx_stop(pflx3);
-    pflx_destroy(pflx1); pflx_destroy(pflx2); pflx_destroy(pflx3);
     
     strcpy(res, "pass");
 }

@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
     if(TESTING == 1){
         char* res = malloc(256);
         tests(res, parser);
-        printf("run all tests");
+        printf("run all tests\n");
         return 0;
     }
     else{

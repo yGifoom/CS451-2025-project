@@ -9,14 +9,18 @@
 
 
 typedef struct{
+    int pid;
+
     queue_t* upQueue;
     queue_t* downQueue;
+    int network_busy;
 
     atomic_uint ownMessageID;
     size_t* next_id_tbd;
     bst_set** id_tbd;
+    pthread_mutex_t* tbd_mutexes;
 
-    atomic_bool shouldStop;
+    atomic_int shouldStop;
 
     pflx* pflx_layer;
 }fifo;
