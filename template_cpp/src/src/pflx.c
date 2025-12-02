@@ -13,7 +13,7 @@ static const int PFLX_RETRIES = 10;
 static const int CONGESTION_CONTROL = 0;
 static const int BUFFERSIZE = 256;
 static const long TIMEOUT_QUEUE_POP = 1000; // in ms
-static const long MAX_DOWNQUEUE_SIZE = 100;
+static const long MAX_DOWNQUEUE_SIZE = 10000;
 // Sentinel used to wake and stop the sender loop
 #define PFLX_SHUTDOWN_SENTINEL ((void*)-1)
 
@@ -155,6 +155,8 @@ int _pflx_send_routine(pflx* pflx){
         } else{
             msg_to_send->retries--;
         }*/
+
+        // BUILD WIREFRAME FOR SEND
         size_t ack_msg_id;
         int lenMessageSent;
         size_t index = msg_to_send->targetID - 1;
@@ -178,11 +180,7 @@ int _pflx_send_routine(pflx* pflx){
         
         size_t frame_size = hdr_size + msg_to_send->messageSize;
 
-        printf("%d-PFLX SEND ROUTINE: frame_size=%zu, hdr_size=%zu, payload=%zu\n",
-               pflx->udpSocket->sockfd, frame_size, hdr_size, msg_to_send->messageSize);
-        fflush(stdout);
-
-        // check if message was ack
+        // check if message is ack
         if (msg_to_send->message && 
             sscanf((char*)msg_to_send->message, "ack %zu", &ack_msg_id) == 1) {
             // strictly reciever behaviour (sending an ACK back)
@@ -211,10 +209,6 @@ int _pflx_send_routine(pflx* pflx){
                                     pflx->phonebook[index].ip_readable, 
                                     ntohs(pflx->phonebook[index].port), 
                                     frame, frame_size);
-
-                printf("%d-PFLX SEND ROUTINE: DATA sent, udp_send returned %d (expected %zu)\n",
-                       pflx->udpSocket->sockfd, lenMessageSent, frame_size);
-                fflush(stdout);
 
                 // put message back in, we will be waiting for ack
                 res = queue_push(pflx->downQueue, msg_to_send, sizeof(pflx_message*));
@@ -250,7 +244,7 @@ int pflx_recv(pflx* pflx, void* message, size_t* messageSize){
 
     memcpy(message, msg->message, msg->messageSize);
     *messageSize = msg->messageSize;
-    printf("%d-PFLX RECV: I am recieving '%s', message of len '%zu'\n", pflx->udpSocket->sockfd, (char*)message, *messageSize); fflush(stdout);
+    printf("%d-PFLX RECV: I am recieving message of len '%zu'\n", pflx->udpSocket->sockfd, *messageSize); fflush(stdout);
     pflx_message_destroy(msg);
     return 0;
 }
@@ -408,7 +402,7 @@ int _pflx_recv_routine(pflx* pflx){
 
         // Try to parse as two integers separated by whitespace
         } else if (msg_recvd->message){
-            printf("%d-PFLX RECV ROUTINE: recvd message '%s', from %zu\n", pflx->udpSocket->sockfd, (char*)msg_recvd->message, msg_recvd->originID); fflush(stdout);
+            printf("%d-PFLX RECV ROUTINE: recvd message %zu, from %zu\n", pflx->udpSocket->sockfd, msg_recvd->messageID, msg_recvd->originID); fflush(stdout);
             // strictly reciever behaviour
             // copy values we'll need
             size_t msgOriginID =  msg_recvd->originID;
@@ -444,6 +438,8 @@ int _pflx_recv_routine(pflx* pflx){
                 pflx->expectedConsequentAck[origin_index].value += removed + 1;
 
                 // deliver message (push capsule)
+                printf("%d-PFLX SEND ROUTINE: pushing into upQueue '%s'\n", pflx->udpSocket->sockfd, 
+                    (char*)msg_recvd->message); fflush(stdout);
                 queue_push(pflx->upQueue, msg_recvd, sizeof(pflx_message*));
                 delivered = 1;
             }else if(expectedConsequentId < msgMessageID){

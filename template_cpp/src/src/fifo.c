@@ -120,6 +120,7 @@ int fifo_send_routine(fifo* fifo){
             break;
         }
 
+        // NOW MANAGING MESSAGE 
         fifo_message* msgToSend = (fifo_message*)popped;
         size_t originIdx = msgToSend->originID - 1;
         printf("%d-FIFO SEND ROUTINE: processing message ID %zu from origin %zu\n", fifo->pid,
@@ -129,26 +130,43 @@ int fifo_send_routine(fifo* fifo){
         pthread_mutex_lock(&fifo->tbd_mutexes[originIdx]);
         if(msgToSend->messageID < fifo->next_id_tbd[originIdx]){
             pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
-            continue;
+            continue; 
         }
         pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
 
-        size_t remainingAcks = fifo_broadcast_missing(fifo, msgToSend);
-        printf("%d-FIFO SEND ROUTINE: broadcast returned %zu missing processes\n", fifo->pid, remainingAcks); fflush(stdout);
+        // ANY UPDATES SINCE MESSAGE WAS IN QUEUE? MERGE IT WITH RECORD
+        fifo_message* Msg; size_t remainingAcks = -1u;
+        pthread_mutex_lock(&fifo->tbd_mutexes[originIdx]);
+        if (bst_set_lookup(fifo->id_tbd[originIdx], msgToSend->messageID, (void**)&Msg, NULL) != 1) {
+            pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
+            // Not in BST yet: add as canonical
+            bst_set_add(fifo->id_tbd[originIdx], msgToSend->messageID, msgToSend, sizeof(fifo_message));
+        } else {
+            pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
+            
+            // broadcasting when no new acks have been recieved is expensive
+            size_t nOfAcks = ba_sum(msgToSend->acks);
+        if (ba_sum(Msg->acks) == nOfAcks){
 
-        // use the canonical message from BST (with merged ACKs) before delivering
-        fifo_message* canonical = NULL;
-        if (bst_set_lookup(fifo->id_tbd[originIdx], msgToSend->messageID, (void**)&canonical, NULL) == 1 && canonical) {
-            msgToSend = canonical;
-        }
-
-        int succ = fifo_deliver(fifo, msgToSend);
-        if (succ == -1){
-            // panic
-            return 1;
-        } else if(succ == 1){
+            printf("%d-FIFO BROADCAST: suspended broadcasting message ID %zu from origin %zu, no new acks\n", fifo->pid,
+            msgToSend->messageID, msgToSend->originID); fflush(stdout);
             queue_push(fifo->downQueue, msgToSend, msgSize);
-        } 
+            continue;
+        } else{
+            // merge to msgToSend for congestion control
+            ba_merge(Msg->acks, msgToSend->acks);
+            ba_merge(msgToSend->acks, Msg->acks);
+            }
+
+        }
+        
+        // BROADCAST
+        remainingAcks = fifo_broadcast_missing(fifo, msgToSend);
+        printf("%d-FIFO SEND ROUTINE: broadcast for msID %zu origin %zu returned %zu missing processes\n", fifo->pid, 
+            msgToSend->messageID, msgToSend->originID, remainingAcks); fflush(stdout);
+
+        queue_push(fifo->downQueue, msgToSend, msgSize);
+        
     }
     printf("%d-FIFO SEND ROUTINE: exiting\n", fifo->pid); fflush(stdout);
     return 0;
@@ -174,6 +192,9 @@ int fifo_recv_routine(fifo* fifo){
         if (res != 0){
             if (res == ETIMEDOUT){
                 printf("%d-FIFO RECV ROUTINE: pflx_recv timed out\n", fifo->pid); fflush(stdout);
+                for(int i = 0; i<3; i++){
+                    printf("%d-FIFO RECV ROUTINE: for process %d next tdb %zu\n", fifo->pid, i, fifo->next_id_tbd[i]); fflush(stdout);
+                }
                 continue;
             }
             printf("%d-FIFO RECV ROUTINE: pflx_recv failed with error %d\n", fifo->pid, res); fflush(stdout);
@@ -181,20 +202,17 @@ int fifo_recv_routine(fifo* fifo){
             return res;
         }
 
+        // RECONSTRUCT THE FRAME
         size_t* hdr = (size_t*)popped;
         printf("%d-FIFO RECV ROUTINE: received frame of size %zu with originID=%zu, targetID=%zu, messageID=%zu\n", fifo->pid,
                msgSize, hdr[0], hdr[1], hdr[2]); fflush(stdout);
+
         if(hdr[0] > fifo->pflx_layer->phonebook_size || hdr[1] > fifo->pflx_layer->phonebook_size){
             printf("%d-FIFO RECV ROUTINE: got message from invalid originid %zu\n", fifo->pid, hdr[0]); fflush(stdout);
             continue;
         } 
 
-        fifo_message* msgRecvd = NULL;
-        // handle recv from pflx layer
-
-        // this routine is the only place where bst might be modified
-        // no need to sync if only 1 recv thread
-        fifo_message* oldMsg = NULL;
+        fifo_message *msgRecvd, *oldMsg = NULL;
         msgRecvd = fifo_unframe(fifo, popped, msgSize);
         if (!msgRecvd) {
             printf("%d-FIFO RECV ROUTINE: failed to unframe message\n", fifo->pid); fflush(stdout);
@@ -202,28 +220,36 @@ int fifo_recv_routine(fifo* fifo){
         }
         printf("%d-FIFO RECV ROUTINE: unframed message ID %zu from origin %zu\n", fifo->pid,
                msgRecvd->messageID, msgRecvd->originID); fflush(stdout);
-
-        // Add sender's ack (targetID from header converted to index)
-        ba_add(msgRecvd->acks, hdr[1]-1); // convertion pid -> index
         
         // Convert originID to array index
-        size_t originIdx = hdr[0] - 1;
+        size_t originIdx = hdr[0] - 1; 
+        size_t destIdx = hdr[1] - 1;
         
+        // UPDATE ACKS
+        pthread_mutex_lock(&fifo->tbd_mutexes[originIdx]);
         if(bst_set_lookup(fifo->id_tbd[originIdx], hdr[2], (void**)&oldMsg, NULL) == 1){
+            // NOT first time I recieve this message
+
             // Merge into canonical; discard transient copy
+            ba_add(msgRecvd->acks, destIdx); // convertion pid -> index
+            ba_add(msgRecvd->acks, originIdx); // convertion pid -> index
             ba_merge(oldMsg->acks, msgRecvd->acks);
             fifo_message_destroy(msgRecvd);
             msgRecvd = oldMsg;
         } else{
+            // first time I recieve this message
+
+            ba_add(msgRecvd->acks, destIdx); // convertion pid -> index
+            ba_add(msgRecvd->acks, originIdx); // convertion pid -> index
             bst_set_add(fifo->id_tbd[originIdx], hdr[2], (void*)msgRecvd, sizeof(fifo_message));
         }
+        pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
+
         // try to deliver message,
-        if(fifo_deliver(fifo, msgRecvd)== -1){
+        if(fifo_deliver(fifo, msgRecvd) == -1){
             //panic
             return 1;
         }
-
-        
     }
     printf("%d-FIFO RECV ROUTINE: exiting\n", fifo->pid); fflush(stdout);
     free(popped);
@@ -232,13 +258,14 @@ int fifo_recv_routine(fifo* fifo){
 
 int fifo_deliver(fifo* fifo, fifo_message* msg){
     size_t originIdx = msg->originID - 1;
-    int succ = 1;
+    int succ = 1; int nOfDelivered = 0;
     size_t firstOriginID = msg->originID; 
     size_t firstMsgID = msg->messageID;
+
     pthread_mutex_lock(&fifo->tbd_mutexes[originIdx]);
-    while (ba_where_1(msg->acks, NULL, NULL) > fifo->pflx_layer->phonebook_size/2){
+
+    while (ba_sum(msg->acks) > fifo->pflx_layer->phonebook_size/2){
         if(fifo->next_id_tbd[originIdx] == msg->messageID){
-            fifo->next_id_tbd[originIdx]++;
             succ = 0;
         }else{
             break;
@@ -261,14 +288,17 @@ int fifo_deliver(fifo* fifo, fifo_message* msg){
             pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
             return -1;
         }
+        // update next expected msgID
+        fifo->next_id_tbd[originIdx]++;
+        nOfDelivered++;
 
-        // Lookup next; do NOT destroy current until after loop if you remove from BST.
+        // Lookup next
         if (bst_set_lookup(fifo->id_tbd[originIdx], fifo->next_id_tbd[originIdx], (void**)&msg, NULL) != 1) {
             break;
         }
     }
-    printf("%d-FIFO DELIVER: succ is %d for msgID: %zu originID: %zu next_tbd: %zu\n", fifo->pid, succ,
-        firstOriginID, firstMsgID, fifo->next_id_tbd[originIdx]); fflush(stdout);
+    printf("%d-FIFO DELIVER: succ is %d for msgID: %zu originID: %zu next_tbd: %zu, #delivered: %d\n", fifo->pid, succ,
+        firstMsgID, firstOriginID, fifo->next_id_tbd[originIdx], nOfDelivered); fflush(stdout);
     pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
     return succ;
 }
@@ -312,28 +342,8 @@ size_t fifo_broadcast_missing(fifo* fifo, fifo_message* msgToBroadcast){
            msgToBroadcast->messageID, msgToBroadcast->originID); fflush(stdout);
 
     size_t originIdx = msgToBroadcast->originID - 1;
-    fifo_message* Msg; size_t* missingProcesses; size_t sizeMissing;
-    if (bst_set_lookup(fifo->id_tbd[originIdx], msgToBroadcast->messageID, (void**)&Msg, NULL) != 1) {
-        // Not in BST yet: add as canonical
-        bst_set_add(fifo->id_tbd[originIdx], msgToBroadcast->messageID, msgToBroadcast, sizeof(fifo_message));
-        Msg = msgToBroadcast;
-    } else {
-        // broadcasting when no new acks have been recieved is expensive
-        
-        size_t nOfAcks = ba_sum(msgToBroadcast->acks);
-        if (ba_sum(Msg->acks) == nOfAcks){
-
-            printf("%d-FIFO BROADCAST: suspended broadcasting message ID %zu from origin %zu, no new acks\n", fifo->pid,
-            msgToBroadcast->messageID, msgToBroadcast->originID); fflush(stdout);
-            return msgToBroadcast->acks->length - nOfAcks;
-        }
-        // merge to msgToBroadcast for congestion control
-        ba_merge(Msg->acks, msgToBroadcast->acks);
-        ba_merge(msgToBroadcast->acks, Msg->acks);
-        // Use canonical for all subsequent computations
-        msgToBroadcast = Msg;
-    }
-    // Compute missing based on canonical bitmap
+    size_t* missingProcesses; size_t sizeMissing;
+    
     ba_where_0(msgToBroadcast->acks, &missingProcesses, &sizeMissing);
     
     if (sizeMissing <= 0){
