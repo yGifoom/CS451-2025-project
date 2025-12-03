@@ -172,206 +172,216 @@ void testPflx(char* res, Parser* parser){
     // Get host information from parser
     size_t hosts_count;
     const Host* hosts = parser_get_hosts(parser, &hosts_count);
-    
     if (hosts_count < 2) {
         strcpy(res, "fail - need at least 2 hosts");
         return;
     }
-    
+
     const size_t NUM_MESSAGES = parser_get_num_messages(parser);
-    if (NUM_MESSAGES == 0 || NUM_MESSAGES > 1000) {
+    if (NUM_MESSAGES == 0 || NUM_MESSAGES > 100000) {
         strcpy(res, "fail - invalid message count");
         return;
     }
-    
-    // Initialize two pflx instances
-    short unsigned int port_sender = ntohs(hosts[0].port);
-    short unsigned int port_receiver = ntohs(hosts[1].port);
-    
-    pflx* sender = pflx_init(port_sender, hosts, hosts_count);
-    pflx* receiver = pflx_init(port_receiver, hosts, hosts_count);
-    
-    if (!sender || !receiver) {
+
+    // Init one pflx per host
+    pflx** nodes = calloc(hosts_count, sizeof(pflx*));
+    if (!nodes) { strcpy(res, "fail - alloc nodes"); return; }
+
+    int init_ok = 1;
+    for (size_t i = 0; i < hosts_count; i++) {
+        short unsigned int port = ntohs(hosts[i].port);
+        nodes[i] = pflx_init(port, hosts, hosts_count);
+        if (!nodes[i]) { init_ok = 0; break; }
+    }
+    if (!init_ok) {
+        for (size_t i = 0; i < hosts_count; i++) if (nodes[i]) pflx_destroy(nodes[i]);
+        free(nodes);
         strcpy(res, "fail - pflx init");
-        if (sender) pflx_destroy(sender);
-        if (receiver) pflx_destroy(receiver);
         return;
     }
-    
-    // Start both pflx instances
-    if (pflx_start(sender) != 0 || pflx_start(receiver) != 0) {
-        strcpy(res, "fail - pflx start");
-        pflx_destroy(sender);
-        pflx_destroy(receiver);
-        return;
-    }
-    
-    // Track sent and delivered messages
-    bst_set* sent_messages = bst_set_init();
-    bst_set* delivered_messages = bst_set_init();
-    
-    // Send messages from sender to receiver
-    size_t sender_id = 1; // hosts[0]
-    size_t receiver_id = 2; // hosts[1]
-    
-    for (size_t i = 1; i <= NUM_MESSAGES; i++) {
-        char message[64];
-        snprintf(message, sizeof(message), "1 %zu", i);
-        printf("TEST: about to get into pflx send\n"); fflush(stdout);
-        
-        if (pflx_send(sender, message, sizeof(char) * strlen(message) + 1, sender_id, receiver_id) != 0) {
-            strcpy(res, "fail - pflx send");
-            bst_set_destroy(sent_messages);
-            bst_set_destroy(delivered_messages);
-            pflx_stop(sender);
-            pflx_stop(receiver);
-            pflx_destroy(sender);
-            pflx_destroy(receiver);
+
+    // Start all nodes
+    for (size_t i = 0; i < hosts_count; i++) {
+        if (pflx_start(nodes[i]) != 0) {
+            for (size_t j = 0; j < hosts_count; j++) {
+                if (nodes[j]) { pflx_stop(nodes[j]); pflx_destroy(nodes[j]); }
+            }
+            free(nodes);
+            strcpy(res, "fail - pflx start");
             return;
         }
-        
-        bst_set_add(sent_messages, i);
     }
-    
-    // Wait for all messages to be delivered
-    size_t max_wait_iterations = NUM_MESSAGES * 100;
-    size_t wait_count = 0;
-    
-    while (wait_count < max_wait_iterations) {
-        // allocate a real buffer and size holder for pflx_recv
-        char recv_buf[256] = {0};
-        size_t recv_len = 0;
 
-        printf("TEST: about to get into pflx recv\n"); fflush(stdout);
-        //struct timespec ts_10s = { .tv_sec = 3, .tv_nsec = 0 }; // 3s
-        //nanosleep(&ts_10s, NULL);
-        
-        if (pflx_recv(receiver, recv_buf, &recv_len) == 0) {
-            printf("TEST: checking duplicate delivery\n"); fflush(stdout);
+    // Track sent per sender (1..NUM_MESSAGES)
+    bst_set** sent_per_sender = calloc(hosts_count, sizeof(bst_set*));
+    if (!sent_per_sender) {
+        strcpy(res, "fail - alloc sent sets");
+        goto cleanup_fail;
+    }
+    for (size_t s = 0; s < hosts_count; s++) {
+        sent_per_sender[s] = bst_set_init();
+        if (!sent_per_sender[s]) { strcpy(res, "fail - sent set init"); goto cleanup_fail; }
+        for (size_t i = 1; i <= NUM_MESSAGES; i++) {
+            bst_set_add(sent_per_sender[s], i, NULL, 0);
+        }
+    }
 
-            // payload format: "<senderId> <messageId>"
-            size_t sender_parsed = 0;
-            size_t msg_id_parsed = 0;
-            if (sscanf(recv_buf, "%zu %zu", &sender_parsed, &msg_id_parsed) != 2) {
-                strcpy(res, "fail - malformed delivered payload");
-                bst_set_destroy(sent_messages);
-                bst_set_destroy(delivered_messages);
-                pflx_stop(sender);
-                pflx_stop(receiver);
-                pflx_destroy(sender);
-                pflx_destroy(receiver);
-                return;
-            }
+    // Track delivered per (receiver r, sender s)
+    size_t N = hosts_count;
+    bst_set** delivered = NULL;
+    delivered = calloc(N * N, sizeof(bst_set*));
+    if (!delivered) { strcpy(res, "fail - alloc delivered sets"); goto cleanup_fail; }
+    for (size_t r = 0; r < N; r++) {
+        for (size_t s = 0; s < N; s++) {
+            if (r == s) continue;
+            delivered[r*N + s] = bst_set_init();
+            if (!delivered[r*N + s]) { strcpy(res, "fail - delivered set init"); goto cleanup_fail; }
+        }
+    }
 
-            // Check for duplicate delivery
-            if (bst_set_lookup(delivered_messages, msg_id_parsed) == 1) {
-                strcpy(res, "fail - duplicate message delivered");
-                bst_set_destroy(sent_messages);
-                bst_set_destroy(delivered_messages);
-                pflx_stop(sender);
-                pflx_stop(receiver);
-                pflx_destroy(sender);
-                pflx_destroy(receiver);
-                return;
-            }
-            printf("TEST: checking if message was actually sent\n"); fflush(stdout);
-            
-            // Check if message was actually sent
-            if (bst_set_lookup(sent_messages, msg_id_parsed) == 0) {
-                strcpy(res, "fail - delivered message was never sent");
-                bst_set_destroy(sent_messages);
-                bst_set_destroy(delivered_messages);
-                pflx_stop(sender);
-                pflx_stop(receiver);
-                pflx_destroy(sender);
-                pflx_destroy(receiver);
-                return;
-            }
-            
-            bst_set_add(delivered_messages, msg_id_parsed);
-            printf("TEST: checking if all messages delivered\n"); fflush(stdout);
-            // Check if all messages delivered
-            if (delivered_messages->size == NUM_MESSAGES) {
-                break;
+    // Send: each sender to every other target
+    for (size_t s = 0; s < N; s++) {
+        for (size_t t = 0; t < N; t++) {
+            if (t == s) continue;
+            for (size_t i = 1; i <= NUM_MESSAGES; i++) {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "%zu %zu", s + 1, i);
+                if (pflx_send(nodes[s], msg, strlen(msg) * sizeof(char) + 1, s + 1, t + 1) != 0) {
+                    strcpy(res, "fail - pflx send");
+                    goto cleanup_fail;
+                }
             }
         }
-        
-        wait_count++;
-        struct timespec ts_1ms = { .tv_sec = 0, .tv_nsec = 1000000 }; // 1ms
-        nanosleep(&ts_1ms, NULL);
     }
-    printf("TEST: checking all messages delivered\n"); fflush(stdout);
-    
-    // Verify all sent messages were delivered
-    if (delivered_messages->size != NUM_MESSAGES) {
+
+    // Receive all expected deliveries
+    size_t expected_total = (2 * (N-1) * NUM_MESSAGES) * N;
+    size_t total_delivered = 0;
+    size_t max_iterations = expected_total * 20 + 1000; // generous cap
+    size_t iter = 0;
+
+    while (total_delivered < expected_total && iter < max_iterations) {
+        int progressed = 0;
+
+        for (size_t r = 0; r < N; r++) {
+            // Only try recv if there is something to avoid 1s timeout
+            while (queue_size(nodes[r]->upQueue) > 0) {
+                char buf[256] = {0};
+                size_t len = 0;
+                if (pflx_recv(nodes[r], buf, &len) != 0) {
+                    break; // timed out or error; move to next node
+                }
+                size_t sender_parsed = 0, msg_id = 0;
+                if (sscanf(buf, "%zu %zu", &sender_parsed, &msg_id) != 2) {
+                    strcpy(res, "fail - malformed delivered payload");
+                    goto cleanup_fail;
+                }
+                if (sender_parsed < 1 || sender_parsed > N || msg_id < 1 || msg_id > NUM_MESSAGES) {
+                    strcpy(res, "fail - out of range payload");
+                    goto cleanup_fail;
+                }
+                size_t s = sender_parsed - 1;
+                // Must have been sent by that sender
+                void* tmp = NULL; size_t tmpsz = 0;
+                if (bst_set_lookup(sent_per_sender[s], msg_id, &tmp, &tmpsz) == 0) {
+                    strcpy(res, "fail - delivered message never sent");
+                    goto cleanup_fail;
+                }
+                // No duplicates per (receiver, sender)
+                if (bst_set_lookup(delivered[r*N + s], msg_id, &tmp, &tmpsz) == 1) {
+                    strcpy(res, "fail - duplicate delivery");
+                    goto cleanup_fail;
+                }
+                bst_set_add(delivered[r*N + s], msg_id, NULL, 0);
+                total_delivered++;
+                progressed = 1;
+            }
+        }
+
+        iter++;
+        if (!progressed) {
+            struct timespec ts_1ms = { .tv_sec = 0, .tv_nsec = 1000000 };
+            nanosleep(&ts_1ms, NULL);
+        }
+    }
+
+    // Verify counts
+    if (total_delivered != expected_total) {
         strcpy(res, "fail - not all messages delivered");
-        bst_set_destroy(sent_messages);
-        bst_set_destroy(delivered_messages);
-        pflx_stop(sender);
-        pflx_stop(receiver);
-        pflx_destroy(sender);
-        pflx_destroy(receiver);
-        return;
+        goto cleanup_fail;
     }
-    printf("TEST: checking each messages delivered\n"); fflush(stdout);
-    
-    // Verify each sent message was delivered
-    for (size_t i = 1; i <= NUM_MESSAGES; i++) {
-        if (bst_set_lookup(delivered_messages, i) == 0) {
-            strcpy(res, "fail - sent message not delivered");
-            bst_set_destroy(sent_messages);
-            bst_set_destroy(delivered_messages);
-            pflx_stop(sender);
-            pflx_stop(receiver);
-            pflx_destroy(sender);
-            pflx_destroy(receiver);
-            return;
+    for (size_t r = 0; r < N; r++) {
+        for (size_t s = 0; s < N; s++) {
+            if (r == s) continue;
+            if (!delivered[r*N + s] || delivered[r*N + s]->size != NUM_MESSAGES) {
+                strcpy(res, "fail - per-pair delivery count mismatch");
+                goto cleanup_fail;
+            }
         }
     }
-    
+
     // Give some time for ACKs to settle
     {
-        struct timespec ts_100ms = { .tv_sec = 0, .tv_nsec = 100000000 }; // 100ms
+        struct timespec ts_100ms = { .tv_sec = 0, .tv_nsec = 100000000 };
         nanosleep(&ts_100ms, NULL);
     }
-    printf("TEST: checking nonConsequentAcks empty\n"); fflush(stdout);
-    
-    // Verify nonConsequentAcks is empty for both sender and receiver
-    for (size_t i = 0; i < hosts_count; i++) {
-        if (sender->nonConsequentAcks[i]->size != 0) {
-            strcpy(res, "fail - sender nonConsequentAcks not empty");
-            bst_set_destroy(sent_messages);
-            bst_set_destroy(delivered_messages);
-            pflx_stop(sender);
-            pflx_stop(receiver);
-            pflx_destroy(sender);
-            pflx_destroy(receiver);
-            return;
-        }
-        
-        if (receiver->nonConsequentAcks[i]->size != 0) {
-            strcpy(res, "fail - receiver nonConsequentAcks not empty");
-            bst_set_destroy(sent_messages);
-            bst_set_destroy(delivered_messages);
-            pflx_stop(sender);
-            pflx_stop(receiver);
-            pflx_destroy(sender);
-            pflx_destroy(receiver);
-            return;
+
+    // Verify that nextId tbd is NUMMESSAGES + 1
+    for (size_t i = 0; i < N; i++) {
+        for (size_t j = 0; j < N; j++) {
+            size_t id_next_tbd = nodes[i]->next_id_tbd[j].value;
+            if (id_next_tbd != (hosts_count - 1) * NUM_MESSAGES + 1) {
+                sprintf(res, "fail - id_next_tbd wrong, holds value %zu ", id_next_tbd);
+                goto cleanup_fail;
+            } else{
+                printf("PFLX TEST- id_next_tbd of %zu for %zu correct\n", i+1, j+1);
+            }
         }
     }
-    printf("TEST: cleanup!\n"); fflush(stdout);
-    // Cleanup
-    bst_set_destroy(sent_messages);
-    bst_set_destroy(delivered_messages);
-    pflx_stop(sender);
-    pflx_stop(receiver);
-    pflx_destroy(sender);
-    pflx_destroy(receiver);
-    
-    strcpy(res, "pass");
-}
 
+    // Verify id_delivered empty on all nodes
+    for (size_t i = 0; i < N; i++) {
+        for (size_t j = 0; j < N; j++) {
+            size_t id_del_len = nodes[i]->id_delivered[j]->size;
+            if (id_del_len != 0) {
+                sprintf(res, "fail - id_delivered not empty, has size %zu ", id_del_len);
+                goto cleanup_fail;
+            }
+        }
+    }
+
+    // Success: cleanup and return pass
+    for (size_t i = 0; i < hosts_count; i++) { pflx_stop(nodes[i]); }
+    for (size_t i = 0; i < hosts_count; i++) { pflx_destroy(nodes[i]); }
+    free(nodes);
+    if (sent_per_sender) {
+        for (size_t s = 0; s < hosts_count; s++) if (sent_per_sender[s]) bst_set_destroy(sent_per_sender[s]);
+        free(sent_per_sender);
+    }
+    if (delivered) {
+        for (size_t idx = 0; idx < N*N; idx++) if (delivered[idx]) bst_set_destroy(delivered[idx]);
+        free(delivered);
+    }
+    strcpy(res, "pass");
+    return;
+
+cleanup_fail:
+    if (nodes) {
+        for (size_t i = 0; i < hosts_count; i++) {
+            if (nodes[i]) { pflx_stop(nodes[i]); pflx_destroy(nodes[i]); }
+        }
+        free(nodes);
+    }
+    if (sent_per_sender) {
+        for (size_t s = 0; s < hosts_count; s++) if (sent_per_sender[s]) bst_set_destroy(sent_per_sender[s]);
+        free(sent_per_sender);
+    }
+    if (delivered) {
+        //for (size_t idx = 0; idx < hosts_count*hosts_count; idx++) if (delivered[idx]) bst_set_destroy(delivered[idx]);
+        //free(delivered);
+    }
+    // res already set above
+}
 void testNodeSeq(char* res, Parser* parser) {
     // Get host information from parser
     size_t hosts_count;
@@ -632,7 +642,7 @@ void* add_thread_func(void* arg);
 void* lookup_thread_func(void* arg) {
         bst_set* s = (bst_set*)arg;
         for (size_t i = 1; i <= 100; i++) {
-            if (bst_set_lookup(s, i) != 1) {
+            if (bst_set_lookup(s, i, NULL, NULL) != 1) {
                 return (void*)1; // Fail
             }
         }
@@ -642,7 +652,7 @@ void* lookup_thread_func(void* arg) {
 void* add_thread_func(void* arg){
         bst_set* s = (bst_set*)arg;
         for (size_t i = 101; i <= 200; i++) {
-            bst_set_add(s, i);
+            bst_set_add(s, i, NULL, 0);
         }
         return NULL;
     }
@@ -661,7 +671,7 @@ void testBstSet(char* res, Parser* parser) {
     }
     
     // Test 2: Add elements
-    if (bst_set_add(set, 50) != 0) {
+    if (bst_set_add(set, 50, NULL, 0) != 0) {
         strcpy(res, "fail - add first element");
         bst_set_destroy(set);
         return;
@@ -676,7 +686,7 @@ void testBstSet(char* res, Parser* parser) {
     // Add more elements to test balancing
     size_t keys[] = {30, 70, 20, 40, 60, 80, 10, 25, 35};
     for (size_t i = 0; i < 9; i++) {
-        if (bst_set_add(set, keys[i]) != 0) {
+        if (bst_set_add(set, keys[i], NULL, 0) != 0) {
             strcpy(res, "fail - add element");
             bst_set_destroy(set);
             return;
@@ -690,7 +700,7 @@ void testBstSet(char* res, Parser* parser) {
     }
     
     // Test 3: Add duplicate (should return 1)
-    if (bst_set_add(set, 50) != 1) {
+    if (bst_set_add(set, 50, NULL, 0) != 1) {
         strcpy(res, "fail - duplicate not detected");
         bst_set_destroy(set);
         return;
@@ -703,32 +713,32 @@ void testBstSet(char* res, Parser* parser) {
     }
     
     // Test 4: Lookup existing elements
-    if (bst_set_lookup(set, 50) != 1) {
+    if (bst_set_lookup(set, 50, NULL, NULL) != 1) {
         strcpy(res, "fail - lookup existing element");
         bst_set_destroy(set);
         return;
     }
     
-    if (bst_set_lookup(set, 10) != 1) {
+    if (bst_set_lookup(set, 10, NULL, NULL) != 1) {
         strcpy(res, "fail - lookup min element");
         bst_set_destroy(set);
         return;
     }
     
-    if (bst_set_lookup(set, 80) != 1) {
+    if (bst_set_lookup(set, 80, NULL, NULL) != 1) {
         strcpy(res, "fail - lookup max element");
         bst_set_destroy(set);
         return;
     }
     
     // Test 5: Lookup non-existing elements
-    if (bst_set_lookup(set, 100) != 0) {
+    if (bst_set_lookup(set, 100, NULL, NULL) != 0) {
         strcpy(res, "fail - lookup non-existing");
         bst_set_destroy(set);
         return;
     }
     
-    if (bst_set_lookup(set, 5) != 0) {
+    if (bst_set_lookup(set, 5, NULL, NULL) != 0) {
         strcpy(res, "fail - lookup below min");
         bst_set_destroy(set);
         return;
@@ -747,7 +757,7 @@ void testBstSet(char* res, Parser* parser) {
         return;
     }
     
-    if (bst_set_lookup(set, 20) != 0) {
+    if (bst_set_lookup(set, 20, NULL, NULL) != 0) {
         strcpy(res, "fail - deleted element still found");
         bst_set_destroy(set);
         return;
@@ -767,7 +777,7 @@ void testBstSet(char* res, Parser* parser) {
         return;
     }
     
-    if (bst_set_lookup(set, 30) != 1 || bst_set_lookup(set, 70) != 1) {
+    if (bst_set_lookup(set, 30, NULL, NULL) != 1 || bst_set_lookup(set, 70, NULL, NULL) != 1) {
         strcpy(res, "fail - tree corrupted after root delete");
         bst_set_destroy(set);
         return;
@@ -784,7 +794,7 @@ void testBstSet(char* res, Parser* parser) {
     
     // Add initial elements
     for (size_t i = 1; i <= 100; i++) {
-        bst_set_add(set, i);
+        bst_set_add(set, i, NULL, 0);
     }
     
     // Thread-safe lookup while another thread is modifying

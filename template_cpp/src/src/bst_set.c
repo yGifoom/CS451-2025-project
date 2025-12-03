@@ -1,4 +1,5 @@
 #include "bst_set.h"
+#include <string.h>
 #include <stdlib.h>
 #include <pthread.h>
 
@@ -65,16 +66,29 @@ static bst_node* find_min(bst_node* node) {
     return node;
 }
 
-static bst_node* insert_helper(bst_node* node, size_t key, int* status) {
+static bst_node* insert_helper(bst_node* node, size_t key, int* status, void* data, size_t data_size) {
     if (!node) {
         *status = 0;
-        return create_node(key);
+        bst_node* new_node = create_node(key);
+        if (new_node && data && data_size > 0) {
+            if ( data_size != 0 || new_node->data != NULL) {
+                new_node->data = malloc(data_size);
+                memcpy(new_node->data, data, data_size);
+            } else{
+                new_node->data = NULL; 
+            }
+            new_node->data_size = data_size;
+        } else if (new_node) {
+            new_node->data = NULL;
+            new_node->data_size = 0;
+        }
+        return new_node;
     }
     
     if (key < node->key) {
-        node->left = insert_helper(node->left, key, status);
+        node->left = insert_helper(node->left, key, status, data, data_size);
     } else if (key > node->key) {
-        node->right = insert_helper(node->right, key, status);
+        node->right = insert_helper(node->right, key, status, data, data_size);
     } else {
         *status = 1; // Key already exists
         return node;
@@ -125,16 +139,40 @@ static bst_node* delete_helper(bst_node* node, size_t key, int* status) {
         if (!node->left || !node->right) {
             bst_node* temp = node->left ? node->left : node->right;
             
-            if (!temp) {
-                temp = node;
-                node = NULL;
-            } else {
-                *node = *temp;
+            // Free the data of the node being deleted
+            if (node->data != NULL){
+                free(node->data);
             }
-            free(temp);
+            
+            // If no children, just free the node
+            if (!temp) {
+                free(node);
+                return NULL;
+            } else {
+                // One child: copy child's content and free the child
+                *node = *temp;
+                free(temp);
+                return node;
+            }
         } else {
+            // Two children: find inorder successor
             bst_node* temp = find_min(node->right);
             node->key = temp->key;
+            
+            // Free old data and copy new data from successor
+            if (node->data != NULL) {
+                free(node->data);
+            }
+            if (temp->data == NULL) {
+                node->data = NULL;
+                node->data_size = 0;
+            } else {
+                node->data = malloc(temp->data_size);
+                if (node->data) {
+                    memcpy(node->data, temp->data, temp->data_size);
+                    node->data_size = temp->data_size;
+                }
+            }
             node->right = delete_helper(node->right, temp->key, status);
         }
     }
@@ -170,12 +208,16 @@ static bst_node* delete_helper(bst_node* node, size_t key, int* status) {
     return node;
 }
 
-static int lookup_helper(bst_node* node, size_t key) {
+static int lookup_helper(bst_node* node, size_t key, void** data, size_t* data_size) {
     if (!node) return 0;
     
-    if (key == node->key) return 1;
-    if (key < node->key) return lookup_helper(node->left, key);
-    return lookup_helper(node->right, key);
+    if (key == node->key){
+        if (data != NULL)*data = node->data;
+        if(data_size != NULL)*data_size = node->data_size;
+        return 1;
+    } 
+    if (key < node->key) return lookup_helper(node->left, key, data, data_size);
+    return lookup_helper(node->right, key, data, data_size);
 }
 
 static void destroy_helper(bst_node* node) {
@@ -183,6 +225,7 @@ static void destroy_helper(bst_node* node) {
     
     destroy_helper(node->left);
     destroy_helper(node->right);
+    free(node->data);
     free(node);
 }
 
@@ -202,13 +245,13 @@ bst_set* bst_set_init(void) {
     return set;
 }
 
-int bst_set_add(bst_set* set, size_t key) {
+int bst_set_add(bst_set* set, size_t key, void* data, size_t data_size) {
     if (!set) return -1;
     
     pthread_mutex_lock(&set->mutex);
     
     int status = 0;
-    set->root = insert_helper(set->root, key, &status);
+    set->root = insert_helper(set->root, key, &status, data, data_size);
     
     if (status == 0) {
         set->size++;
@@ -236,17 +279,17 @@ int bst_set_delete(bst_set* set, size_t key) {
     return status;
 }
 
-int bst_set_lookup(bst_set* set, size_t key) {
+int bst_set_lookup(bst_set* set, size_t key, void** data, size_t* data_size) {
     if (!set) return 0;
     
     pthread_mutex_lock(&set->mutex);
-    int result = lookup_helper(set->root, key);
+    int result = lookup_helper(set->root, key, data, data_size);
     pthread_mutex_unlock(&set->mutex);
     
     return result;
 }
 
-size_t bst_set_compact_consequent(bst_set* set, size_t lastCon) {
+size_t bst_set_compact_consequent(bst_set* set, size_t lastCon, int (*condition)(void* data, size_t data_size)) {
     if (!set) return 0;
 
     pthread_mutex_lock(&set->mutex);
@@ -254,7 +297,7 @@ size_t bst_set_compact_consequent(bst_set* set, size_t lastCon) {
     size_t removed = 0;
 
     while (set->root) {
-        // Avoid overflow on (*lastCon + 1)
+        // Avoid overflow on (lastCon + 1)
         size_t next = lastCon + 1;
         if (next <= lastCon) {
             // Overflow detected; cannot progress further.
@@ -264,7 +307,7 @@ size_t bst_set_compact_consequent(bst_set* set, size_t lastCon) {
         bst_node* min_node = find_min(set->root);
         if (!min_node) break;
 
-        if (min_node->key == next) {
+        if (min_node->key == next && (condition == NULL || condition(min_node->data, min_node->data_size) == 1)) {
             int status = 0;
             set->root = delete_helper(set->root, min_node->key, &status);
             if (status == 0) {

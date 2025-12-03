@@ -4,7 +4,7 @@
 #include "../include_tests/tests.h"
 #include"node.h"
 
-const int TESTING = 0;
+const int TESTING = 1;
 
 void tests(char* res, Parser* parser){
     /*
@@ -23,11 +23,11 @@ void tests(char* res, Parser* parser){
     testQueue(queue_res, parser);
     printf("Test Queue: %s\n", queue_res);
     free(queue_res);*/
-    /*
+    
     char* pflx_res = malloc(sizeof(char) * 50);
     testPflx(pflx_res, parser);
     printf("Test Pflx: %s\n", pflx_res);
-    free(pflx_res);*/
+    free(pflx_res);
     /*
     char* bst_res = malloc(sizeof(char) * 50);
     testBstSet(bst_res, parser);
