@@ -1033,9 +1033,9 @@ void testFifo(char* res, Parser* parser) {
     }
 
     // Initialize FIFO layers
-    fifo* fifo1 = fifo_init(pflx1);
-    fifo* fifo2 = fifo_init(pflx2);
-    fifo* fifo3 = fifo_init(pflx3);
+    fifo* fifo1 = fifo_init(pflx1, 1u);
+    fifo* fifo2 = fifo_init(pflx2, 2u);
+    fifo* fifo3 = fifo_init(pflx3, 3u);
     
     if (!fifo1 || !fifo2 || !fifo3) {
         strcpy(res, "fail - fifo init");
@@ -1155,9 +1155,9 @@ void testFifo(char* res, Parser* parser) {
         return;
     }
     
-    fifo1 = fifo_init(pflx1);
-    fifo2 = fifo_init(pflx2);
-    fifo3 = fifo_init(pflx3);
+    fifo1 = fifo_init(pflx1, 1u);
+    fifo2 = fifo_init(pflx2, 2u);
+    fifo3 = fifo_init(pflx3, 3u);
     
     if (!fifo1 || !fifo2 || !fifo3) {
         strcpy(res, "fail - fifo init (concurrent)");

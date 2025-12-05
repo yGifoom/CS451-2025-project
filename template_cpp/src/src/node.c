@@ -200,7 +200,7 @@ Node* node_init(
     node->nOfMessages = nOfMessages;
     // phonebook is indexed at 0, process ids from 1
     pflx* pflx_socket = pflx_init(ntohs(phonebook[processId-1].port), phonebook, phonebook_size);
-    node->socket = fifo_init(pflx_socket);
+    node->socket = fifo_init(pflx_socket, processId);
     node->logger = logger_init(logfile, DEBUG);
     return node;
 }

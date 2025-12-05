@@ -40,14 +40,16 @@ static fifo_message* fifo_unframe(fifo* fifo, void* frame, size_t frameSize){
         }
     }
 
-    const size_t hdr_words = 4;
+    const size_t hdr_words = 5;
     const size_t hdr_size = hdr_words * sizeof(size_t);
     
+    // hdr[0]: originID hdr[1]: targetID hdr[2]: msgID hdr[3]: msg size hdr[4]: relayID
     size_t* hdr = (size_t*)frame;
     size_t originID = hdr[0];
     // hdr[1] is targetID (not needed for reconstruction)
     size_t messageID = hdr[2];
     size_t messageSize = hdr[3];
+    size_t relayID = hdr[4];
     
     size_t num_blocks = (fifo->pflx_layer->phonebook_size + 63) / 64; // round up to 64-bit blocks
     size_t baSize = num_blocks * sizeof(uint64_t);
@@ -83,21 +85,22 @@ static fifo_message* fifo_unframe(fifo* fifo, void* frame, size_t frameSize){
     msg->messageID = messageID;
     msg->originID = originID;
     msg->acks = acks;
+    msg->relayID = relayID;
     
     return msg;
 }
 
 int fifo_send_routine(fifo* fifo){
     unsigned char* frame = malloc(BUFFERSIZE);
-    printf("%d-FIFO SEND ROUTINE: started\n", fifo->pid); fflush(stdout);
+    printf("%zu-FIFO SEND ROUTINE: started\n", fifo->pid); fflush(stdout);
 
     while(1){
         if (atomic_load_explicit(&fifo->shouldStop, memory_order_acquire) == 1){
-            printf("%d-FIFO SEND ROUTINE: stop requested, exiting\n", fifo->pid); fflush(stdout);
+            printf("%zu-FIFO SEND ROUTINE: stop requested, exiting\n", fifo->pid); fflush(stdout);
             break;
         }
         if(pflx_network_status(fifo->pflx_layer) == 0){
-            printf("%d-FIFO SEND ROUTINE: pflx network not busy\n", fifo->pid); fflush(stdout);
+            printf("%zu-FIFO SEND ROUTINE: pflx network not busy\n", fifo->pid); fflush(stdout);
             fifo->network_busy = 0;
         }
 
@@ -110,20 +113,20 @@ int fifo_send_routine(fifo* fifo){
             if (res == ETIMEDOUT){
                 continue;
             }
-            printf("%d-FIFO SEND ROUTINE: queue_pop_timed failed with error %d\n", fifo->pid, res); fflush(stdout);
+            printf("%zu-FIFO SEND ROUTINE: queue_pop_timed failed with error %d\n", fifo->pid, res); fflush(stdout);
             free(frame);
             return res;
         }
         // Check for shutdown sentinel
         if (popped == FIFO_SHUTDOWN_SENTINEL) {
-            printf("%d-FIFO SEND ROUTINE: shutdown sentinel received, exiting\n", fifo->pid); fflush(stdout);
+            printf("%zu-FIFO SEND ROUTINE: shutdown sentinel received, exiting\n", fifo->pid); fflush(stdout);
             break;
         }
 
         // NOW MANAGING MESSAGE 
         fifo_message* msgToSend = (fifo_message*)popped;
         size_t originIdx = msgToSend->originID - 1;
-        printf("%d-FIFO SEND ROUTINE: processing message ID %zu from origin %zu\n", fifo->pid,
+        printf("%zu-FIFO SEND ROUTINE: processing message ID %zu from origin %zu\n", fifo->pid,
                msgToSend->messageID, msgToSend->originID); fflush(stdout);
 
         // remove already delivered msgs
@@ -139,36 +142,37 @@ int fifo_send_routine(fifo* fifo){
         pthread_mutex_lock(&fifo->tbd_mutexes[originIdx]);
         if (bst_set_lookup(fifo->id_tbd[originIdx], msgToSend->messageID, (void**)&Msg, NULL) != 1) {
             pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
-            // Not in BST yet: add as canonical
+            // first time this message is sent: add as canonical
             bst_set_add(fifo->id_tbd[originIdx], msgToSend->messageID, msgToSend, sizeof(fifo_message));
         } else {
             pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
             
-            // broadcasting when no new acks have been recieved is expensive
+            // broadcast only when pflx has responded with something
+            // broadcasting when no new acks have been recieved is congests the network
             size_t nOfAcks = ba_sum(msgToSend->acks);
         if (ba_sum(Msg->acks) == nOfAcks){
 
-            printf("%d-FIFO BROADCAST: suspended broadcasting message ID %zu from origin %zu, no new acks\n", fifo->pid,
+            printf("%zu-FIFO BROADCAST: suspended broadcasting message ID %zu from origin %zu, no new acks\n", fifo->pid,
             msgToSend->messageID, msgToSend->originID); fflush(stdout);
+
             queue_push(fifo->downQueue, msgToSend, msgSize);
             continue;
         } else{
-            // merge to msgToSend for congestion control
+            // merge to msgToSend to keep congestion control mechanism updated
             ba_merge(Msg->acks, msgToSend->acks);
             ba_merge(msgToSend->acks, Msg->acks);
             }
-
         }
         
         // BROADCAST
         remainingAcks = fifo_broadcast_missing(fifo, msgToSend);
-        printf("%d-FIFO SEND ROUTINE: broadcast for msID %zu origin %zu returned %zu missing processes\n", fifo->pid, 
+        printf("%zu-FIFO SEND ROUTINE: broadcast for msID %zu origin %zu returned %zu missing processes\n", fifo->pid, 
             msgToSend->messageID, msgToSend->originID, remainingAcks); fflush(stdout);
 
         queue_push(fifo->downQueue, msgToSend, msgSize);
         
     }
-    printf("%d-FIFO SEND ROUTINE: exiting\n", fifo->pid); fflush(stdout);
+    printf("%zu-FIFO SEND ROUTINE: exiting\n", fifo->pid); fflush(stdout);
     return 0;
 }
 
@@ -176,82 +180,92 @@ int fifo_recv_routine(fifo* fifo){
     // init
     void* popped = malloc(BUFFERSIZE);
     size_t msgSize;
-    printf("%d-FIFO RECV ROUTINE: started\n", fifo->pid); fflush(stdout);
+    printf("%zu-FIFO RECV ROUTINE: started\n", fifo->pid); fflush(stdout);
 
     while(1){
         if (atomic_load_explicit(&fifo->shouldStop, memory_order_acquire) == 1){
-            printf("%d-FIFO RECV ROUTINE: stop requested, exiting\n", fifo->pid); fflush(stdout);
+            printf("%zu-FIFO RECV ROUTINE: stop requested, exiting\n", fifo->pid); fflush(stdout);
             break;
         }
         if(pflx_network_status(fifo->pflx_layer) == 0){
-            printf("%d-FIFO RECV ROUTINE: pflx network not busy\n", fifo->pid); fflush(stdout);
+            printf("%zu-FIFO RECV ROUTINE: pflx network not busy\n", fifo->pid); fflush(stdout);
             fifo->network_busy = 0;
         }
 
         int res = pflx_recv(fifo->pflx_layer, popped, &msgSize);
         if (res != 0){
             if (res == ETIMEDOUT){
-                printf("%d-FIFO RECV ROUTINE: pflx_recv timed out\n", fifo->pid); fflush(stdout);
+                printf("%zu-FIFO RECV ROUTINE: pflx_recv timed out\n", fifo->pid); fflush(stdout);
                 for(int i = 0; i<3; i++){
-                    printf("%d-FIFO RECV ROUTINE: for process %d next tdb %zu\n", fifo->pid, i, fifo->next_id_tbd[i]); fflush(stdout);
+                    printf("%zu-FIFO RECV ROUTINE: for process %d next tdb %zu\n", fifo->pid, i+1, fifo->next_id_tbd[i]); fflush(stdout);
                 }
                 continue;
             }
-            printf("%d-FIFO RECV ROUTINE: pflx_recv failed with error %d\n", fifo->pid, res); fflush(stdout);
+            printf("%zu-FIFO RECV ROUTINE: pflx_recv failed with error %d\n", fifo->pid, res); fflush(stdout);
             free(popped);
             return res;
         }
 
         // RECONSTRUCT THE FRAME
+        // hdr[0]: originID hdr[1]: targetID hdr[2]: msgID hdr[3]: msg size hdr[4]: relayID
         size_t* hdr = (size_t*)popped;
-        printf("%d-FIFO RECV ROUTINE: received frame of size %zu with originID=%zu, targetID=%zu, messageID=%zu\n", fifo->pid,
+        printf("%zu-FIFO RECV ROUTINE: received frame of size %zu with originID=%zu, targetID=%zu, messageID=%zu\n", fifo->pid,
                msgSize, hdr[0], hdr[1], hdr[2]); fflush(stdout);
 
         if(hdr[0] > fifo->pflx_layer->phonebook_size || hdr[1] > fifo->pflx_layer->phonebook_size){
-            printf("%d-FIFO RECV ROUTINE: got message from invalid originid %zu\n", fifo->pid, hdr[0]); fflush(stdout);
+            printf("%zu-FIFO RECV ROUTINE: got message from invalid originid %zu\n", fifo->pid, hdr[0]); fflush(stdout);
             continue;
         } 
 
         fifo_message *msgRecvd, *oldMsg = NULL;
         msgRecvd = fifo_unframe(fifo, popped, msgSize);
         if (!msgRecvd) {
-            printf("%d-FIFO RECV ROUTINE: failed to unframe message\n", fifo->pid); fflush(stdout);
+            printf("%zu-FIFO RECV ROUTINE: failed to unframe message\n", fifo->pid); fflush(stdout);
             continue;
         }
-        printf("%d-FIFO RECV ROUTINE: unframed message ID %zu from origin %zu\n", fifo->pid,
+        printf("%zu-FIFO RECV ROUTINE: unframed message ID %zu from origin %zu\n", fifo->pid,
                msgRecvd->messageID, msgRecvd->originID); fflush(stdout);
         
         // Convert originID to array index
         size_t originIdx = hdr[0] - 1; 
         size_t destIdx = hdr[1] - 1;
+        size_t relayIdx = hdr[4] - 1;
         
         // UPDATE ACKS
         pthread_mutex_lock(&fifo->tbd_mutexes[originIdx]);
         if(bst_set_lookup(fifo->id_tbd[originIdx], hdr[2], (void**)&oldMsg, NULL) == 1){
             // NOT first time I recieve this message
 
-            // Merge into canonical; discard transient copy
+            // Merge into canonical;
             ba_add(msgRecvd->acks, destIdx); // convertion pid -> index
-            ba_add(msgRecvd->acks, originIdx); // convertion pid -> index
             ba_merge(oldMsg->acks, msgRecvd->acks);
-            fifo_message_destroy(msgRecvd);
-            msgRecvd = oldMsg;
+            ba_merge(msgRecvd->acks, oldMsg->acks);
         } else{
             // first time I recieve this message
-
             ba_add(msgRecvd->acks, destIdx); // convertion pid -> index
-            ba_add(msgRecvd->acks, originIdx); // convertion pid -> index
+
+            // naive retransmit
+            ba_add(msgRecvd->acks, fifo->pid - 1);
+            // fifo_broadcast_missing(fifo, msgRecvd); // TODO THIS CREATES A free(): invalid pointer 
+
             bst_set_add(fifo->id_tbd[originIdx], hdr[2], (void*)msgRecvd, sizeof(fifo_message));
         }
         pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
 
         // try to deliver message,
-        if(fifo_deliver(fifo, msgRecvd) == -1){
+        int fifoDeliverRes = fifo_deliver(fifo, msgRecvd);
+        if( fifoDeliverRes == 0){
+            // was not delivered 
+        } else if(fifoDeliverRes == -1){
             //panic
+            fifo_message_destroy(msgRecvd);
             return 1;
         }
+
+        // garbage collect msgRecvd
+        fifo_message_destroy(msgRecvd);
     }
-    printf("%d-FIFO RECV ROUTINE: exiting\n", fifo->pid); fflush(stdout);
+    printf("%zu-FIFO RECV ROUTINE: exiting\n", fifo->pid); fflush(stdout);
     free(popped);
     return 0;
 }
@@ -270,20 +284,20 @@ int fifo_deliver(fifo* fifo, fifo_message* msg){
         }else{
             break;
         }
-        printf("%d-FIFO DELIVER: delivering message ID %zu from origin %zu\n", fifo->pid,
+        printf("%zu-FIFO DELIVER: delivering message ID %zu from origin %zu\n", fifo->pid,
                msg->messageID, msg->originID); fflush(stdout);
 
         // Push a heap copy of the payload to avoid aliasing BST-owned fifo_message
         void* deliver_buf = malloc(msg->messageSize);
         if (!deliver_buf) {
-            printf("%d-FIFO DELIVER: failed to alloc deliver buffer\n", fifo->pid); fflush(stdout);
+            printf("%zu-FIFO DELIVER: failed to alloc deliver buffer\n", fifo->pid); fflush(stdout);
             pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
             return -1;
         }
         memcpy(deliver_buf, msg->message, msg->messageSize);
         int res = queue_push(fifo->upQueue, deliver_buf, msg->messageSize);
         if (res != 0) {
-            printf("%d-FIFO DELIVER: failed to push to upQueue, error %d\n", fifo->pid, res); fflush(stdout);
+            printf("%zu-FIFO DELIVER: failed to push to upQueue, error %d\n", fifo->pid, res); fflush(stdout);
             free(deliver_buf);
             pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
             return -1;
@@ -297,7 +311,7 @@ int fifo_deliver(fifo* fifo, fifo_message* msg){
             break;
         }
     }
-    printf("%d-FIFO DELIVER: succ is %d for msgID: %zu originID: %zu next_tbd: %zu, #delivered: %d\n", fifo->pid, succ,
+    printf("%zu-FIFO DELIVER: succ is %d for msgID: %zu originID: %zu next_tbd: %zu, #delivered: %d\n", fifo->pid, succ,
         firstMsgID, firstOriginID, fifo->next_id_tbd[originIdx], nOfDelivered); fflush(stdout);
     pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
     return succ;
@@ -307,7 +321,7 @@ int fifo_deliver(fifo* fifo, fifo_message* msg){
 //OPT: maybe better if pflx makes frame recursively
 static unsigned char* fifo_make_frame(fifo_message* m, size_t* frameSize){
     // Build wire frame: [originID, messageID, targetID, payloadSize][payload...]
-    const size_t hdr_words = 4;
+    const size_t hdr_words = 5;
     const size_t hdr_size = hdr_words * sizeof(size_t);
 
     void* bitArray = ba_unsafe_copy(m->acks);
@@ -319,12 +333,14 @@ static unsigned char* fifo_make_frame(fifo_message* m, size_t* frameSize){
         free(bitArray);
         return NULL;
     }
-
+    
+    // hdr[0]: originID hdr[1]: targetID hdr[2]: msgID hdr[3]: msg size hdr[4]: relayID
     size_t* hdr = (size_t*)frame;
     hdr[0] = m->originID;
     hdr[1] = 0; // fill in later
     hdr[2] = m->messageID;
     hdr[3] = m->messageSize;
+    hdr[4] = m->relayID;
     
     // copying bit array
     memcpy(frame + hdr_size, bitArray, baSize);
@@ -338,7 +354,7 @@ static unsigned char* fifo_make_frame(fifo_message* m, size_t* frameSize){
 }
 
 size_t fifo_broadcast_missing(fifo* fifo, fifo_message* msgToBroadcast){
-    printf("%d-FIFO BROADCAST: broadcasting message ID %zu from origin %zu\n", fifo->pid,
+    printf("%zu-FIFO BROADCAST: broadcasting message ID %zu from origin %zu\n", fifo->pid,
            msgToBroadcast->messageID, msgToBroadcast->originID); fflush(stdout);
 
     size_t originIdx = msgToBroadcast->originID - 1;
@@ -352,6 +368,8 @@ size_t fifo_broadcast_missing(fifo* fifo, fifo_message* msgToBroadcast){
     
     size_t frameSize;
     unsigned char* fifoFrame = fifo_make_frame(msgToBroadcast, &frameSize);
+
+    // hdr[0]: originID hdr[1]: targetID hdr[2]: msgID hdr[3]: msg size hdr[4]: relayID
     size_t* hdr = (size_t*)fifoFrame;
 
     if (fifoFrame == NULL){
@@ -364,10 +382,11 @@ size_t fifo_broadcast_missing(fifo* fifo, fifo_message* msgToBroadcast){
 
         // change targetID position: hdr[1]
         hdr[1] = missingProcesses[i]+1;
+        hdr[4] = fifo->pid;
         
         pflx_send(fifo->pflx_layer, 
             fifoFrame, frameSize,
-            msgToBroadcast->originID, missingProcesses[i]+1); 
+            fifo->pid, missingProcesses[i]+1); 
     }
     free(fifoFrame);
     return sizeMissing;
@@ -382,34 +401,36 @@ int fifo_send(fifo* fifo, void* message, size_t messageSize, size_t originID){
         }
     }
     
-    printf("%d-FIFO SEND: creating message ID %u from origin %zu\n", fifo->pid, msgID, originID); fflush(stdout);
+    printf("%zu-FIFO SEND: creating message ID %u from origin %zu, relayID: %zu\n", fifo->pid, msgID, originID, fifo->pid); fflush(stdout);
     
-    fifo_message* msg = fifo_message_init(message, messageSize, msgID, originID, fifo->pflx_layer->phonebook_size);
+    // relay for send is always the origin
+    fifo_message* msg = fifo_message_init(message,
+        messageSize, msgID, originID, fifo->pflx_layer->phonebook_size, fifo->pid);
     if (msg == NULL) {
         return 1;
     }
 
     int res = queue_push(fifo->downQueue, msg, sizeof(fifo_message*)); // push pointer value
     if (res != 0){
-        printf("%d-FIFO SEND: failed to push to downQueue, error %d\n", fifo->pid, res); fflush(stdout);
+        printf("%zu-FIFO SEND: failed to push to downQueue, error %d\n", fifo->pid, res); fflush(stdout);
         return res;
     }
 
-    printf("%d-FIFO SEND: message queued successfully\n", fifo->pid); fflush(stdout);
+    printf("%zu-FIFO SEND: message queued successfully\n", fifo->pid); fflush(stdout);
     return 0;
 }
 
 int fifo_recv(fifo* fifo, void* message, size_t* messageSize){
-    printf("%d-FIFO RECV: started\n", fifo->pid); fflush(stdout);
+    printf("%zu-FIFO RECV: started\n", fifo->pid); fflush(stdout);
 
     void* payload = NULL; size_t payloadSize = 0;
     int res = queue_pop_timed(fifo->upQueue, &payload, &payloadSize, TIMEOUT_QUEUE_POP);
     if(res != 0){
         if (res == ETIMEDOUT){
-            printf("%d-FIFO RECV: timed out\n", fifo->pid); fflush(stdout);
+            printf("%zu-FIFO RECV: timed out\n", fifo->pid); fflush(stdout);
             return res;
         }
-        printf("%d-FIFO RECV: failed with error %d\n", fifo->pid, res); fflush(stdout);
+        printf("%zu-FIFO RECV: failed with error %d\n", fifo->pid, res); fflush(stdout);
         return res;
     }
 
@@ -417,37 +438,37 @@ int fifo_recv(fifo* fifo, void* message, size_t* messageSize){
     *messageSize = payloadSize;
     free(payload);
 
-    printf("%d-FIFO RECV: received message '%s' of size %zu\n", fifo->pid, (char*)message, *messageSize); fflush(stdout);
+    printf("%zu-FIFO RECV: received message '%s' of size %zu\n", fifo->pid, (char*)message, *messageSize); fflush(stdout);
     return 0;
 }
 
 int fifo_start(fifo* fifo){
-    printf("%d-FIFO START: starting fifo threads\n", fifo->pid); fflush(stdout);
+    printf("%zu-FIFO START: starting fifo threads\n", fifo->pid); fflush(stdout);
     int res = pflx_start(fifo->pflx_layer);
     if (res != 0){
-        printf("%d-FIFO START: failed to start pflx\n", fifo->pid); fflush(stdout);
+        printf("%zu-FIFO START: failed to start pflx\n", fifo->pid); fflush(stdout);
         return -1;
     } 
     _threads_entry* e = _thr_get(fifo, 1);
     if (!e) {
-        printf("%d-FIFO START: failed to get threads entry\n", fifo->pid); fflush(stdout);
+        printf("%zu-FIFO START: failed to get threads entry\n", fifo->pid); fflush(stdout);
         return -1;
     }
 
     // Start receiver first
     thread_wrapper_args* recvArgs = thread_wrapper_args_init(_recv_wrapper, fifo, fifo);
     if (!recvArgs || pthread_create(&e->recv_tid, NULL, generic_thread_wrapper, recvArgs) != 0) {
-        printf("%d-FIFO START: failed to create receiver thread\n", fifo->pid); fflush(stdout);
+        printf("%zu-FIFO START: failed to create receiver thread\n", fifo->pid); fflush(stdout);
         free(recvArgs);
         return -1;
     }
     e->recv_started = 1;
-    printf("%d-FIFO START: receiver thread started\n", fifo->pid); fflush(stdout);
+    printf("%zu-FIFO START: receiver thread started\n", fifo->pid); fflush(stdout);
 
     // Start sender
     thread_wrapper_args* sendArgs = thread_wrapper_args_init(_send_wrapper, fifo, fifo);
     if (!sendArgs || pthread_create(&e->send_tid, NULL, generic_thread_wrapper, sendArgs) != 0) {
-        printf("%d-FIFO START: failed to create sender thread\n", fifo->pid); fflush(stdout);
+        printf("%zu-FIFO START: failed to create sender thread\n", fifo->pid); fflush(stdout);
         free(sendArgs);
         // rollback receiver
         pthread_cancel(e->recv_tid);
@@ -456,56 +477,56 @@ int fifo_start(fifo* fifo){
         return -1;
     }
     e->send_started = 1;
-    printf("%d-FIFO START: sender thread started\n", fifo->pid); fflush(stdout);
+    printf("%zu-FIFO START: sender thread started\n", fifo->pid); fflush(stdout);
 
     return 0;
 }
 
 int fifo_stop(fifo* fifo){
-    printf("%d-FIFO STOP: stopping fifo\n", fifo->pid); fflush(stdout);
+    printf("%zu-FIFO STOP: stopping fifo\n", fifo->pid); fflush(stdout);
     int res = pflx_stop(fifo->pflx_layer);
     if (res != 0) {
-        printf("%d-FIFO STOP: failed to stop pflx\n", fifo->pid); fflush(stdout);
+        printf("%zu-FIFO STOP: failed to stop pflx\n", fifo->pid); fflush(stdout);
         return -1;
     }
 
     _threads_entry* e = _thr_get(fifo, 0);
     if (!e) {
-        printf("%d-FIFO STOP: failed to get threads entry\n", fifo->pid); fflush(stdout);
+        printf("%zu-FIFO STOP: failed to get threads entry\n", fifo->pid); fflush(stdout);
         return -1;
     }
 
     // reset graceful stop flag
     atomic_store_explicit(&fifo->shouldStop, 1, memory_order_release);
-    printf("%d-FIFO STOP: stop flag set\n", fifo->pid); fflush(stdout);
+    printf("%zu-FIFO STOP: stop flag set\n", fifo->pid); fflush(stdout);
 
     // Wake sender loop (if waiting on downQueue)
     if (e->send_started) {
         (void)queue_push(fifo->downQueue, FIFO_SHUTDOWN_SENTINEL, sizeof(fifo_message*));
-        printf("%d-FIFO STOP: shutdown sentinel sent to sender\n", fifo->pid); fflush(stdout);
+        printf("%zu-FIFO STOP: shutdown sentinel sent to sender\n", fifo->pid); fflush(stdout);
     }
 
     // Join threads BEFORE removing entry
     if (e->send_started) { 
-        printf("%d-FIFO STOP: joining sender thread\n", fifo->pid); fflush(stdout);
+        printf("%zu-FIFO STOP: joining sender thread\n", fifo->pid); fflush(stdout);
         pthread_join(e->send_tid, NULL); 
         e->send_started = 0; 
     }
     if (e->recv_started) { 
-        printf("%d-FIFO STOP: joining receiver thread\n", fifo->pid); fflush(stdout);
+        printf("%zu-FIFO STOP: joining receiver thread\n", fifo->pid); fflush(stdout);
         pthread_join(e->recv_tid, NULL); 
         e->recv_started = 0; 
     }
 
     _thr_remove(fifo);
-    printf("%d-FIFO STOP: fifo stopped successfully\n", fifo->pid); fflush(stdout);
+    printf("%zu-FIFO STOP: fifo stopped successfully\n", fifo->pid); fflush(stdout);
     return 0;
 }
 
-fifo* fifo_init(pflx* pflx){
+fifo* fifo_init(pflx* pflx, size_t pid){
     fifo* fifo_socket = malloc(sizeof(fifo));
 
-    fifo_socket->pid = pflx->udpSocket->sockfd;
+    fifo_socket->pid = pid;
     fifo_socket->upQueue = queue_init();
     fifo_socket->downQueue = queue_init();
     fifo_socket->network_busy = 1;
@@ -544,7 +565,8 @@ int fifo_destroy(fifo* fifo_socket){
 
 }
 
-fifo_message* fifo_message_init(void* message, size_t messageSize, size_t messageID, size_t originID, size_t numAcks){
+fifo_message* fifo_message_init(void* message, 
+    size_t messageSize, size_t messageID, size_t originID, size_t numAcks, size_t relayID){
     fifo_message* fifoMsg = malloc(sizeof(fifo_message));
     if (!fifoMsg) return NULL;
 
@@ -562,6 +584,7 @@ fifo_message* fifo_message_init(void* message, size_t messageSize, size_t messag
     ba_add(fifoMsg->acks, originID-1); // from id to index
     fifoMsg->messageID = messageID;
     fifoMsg->originID = originID;
+    fifoMsg->relayID = relayID;
 
     return fifoMsg;
 }

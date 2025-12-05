@@ -9,7 +9,7 @@
 
 
 typedef struct{
-    int pid;
+    size_t pid;
 
     queue_t* upQueue;
     queue_t* downQueue;
@@ -32,6 +32,7 @@ typedef struct{
 
     size_t messageID;
     size_t originID;
+    size_t relayID;
 }fifo_message;
 
 int fifo_start(fifo* fifo);
@@ -51,16 +52,13 @@ int fifo_deliver(fifo* fifo, fifo_message* msg);
 // returns number of missing processes
 size_t fifo_broadcast_missing(fifo* fifo, fifo_message* msgToBroadcast);
 
-fifo* fifo_init(pflx* pflx);
+fifo* fifo_init(pflx* pflx, size_t pid);
 
 int fifo_destroy(fifo* fifo);
 
-fifo_message* fifo_message_init(void* message, size_t messageSize, size_t messageID, size_t originID, size_t numAcks);
+fifo_message* fifo_message_init(void* message, 
+    size_t messageSize, size_t messageID, size_t originID, size_t numAcks, size_t relayID);
 
 int fifo_message_destroy(fifo_message* fifoMsg);
-
-
-
-
 
 #endif
