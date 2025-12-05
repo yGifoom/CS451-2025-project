@@ -26,7 +26,7 @@ void tests(char* res, Parser* parser){
     
     char* pflx_res = malloc(sizeof(char) * 50);
     testPflx(pflx_res, parser);
-    printf("Test Pflx: %s\n", pflx_res);
+    printf("TEST Pflx: %s\n", pflx_res);
     free(pflx_res);
     /*
     char* bst_res = malloc(sizeof(char) * 50);
@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
     if(TESTING == 1){
         char* res = malloc(256);
         tests(res, parser);
-        printf("run all tests");
+        printf("ran all tests\n");
     }
     else{
         // Get host information from parser

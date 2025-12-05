@@ -307,7 +307,7 @@ void testPflx(char* res, Parser* parser){
 
     // Verify counts
     if (total_delivered != expected_total) {
-        strcpy(res, "fail - not all messages delivered");
+        sprintf(res, "fail - %zu messages were delivered, but expected %zu", total_delivered, expected_total);
         goto cleanup_fail;
     }
     for (size_t r = 0; r < N; r++) {
@@ -326,12 +326,22 @@ void testPflx(char* res, Parser* parser){
         nanosleep(&ts_100ms, NULL);
     }
 
-    // Verify that nextId tbd is NUMMESSAGES + 1
+    // Verify that nextId tbd is NUMMESSAGES + 1 except for self
     for (size_t i = 0; i < N; i++) {
         for (size_t j = 0; j < N; j++) {
             size_t id_next_tbd = nodes[i]->next_id_tbd[j].value;
-            if (id_next_tbd != (hosts_count - 1) * NUM_MESSAGES + 1) {
-                sprintf(res, "fail - id_next_tbd wrong, holds value %zu ", id_next_tbd);
+            if (i == j){
+                if (id_next_tbd != NUM_MESSAGES * (hosts_count - 1) + 1) {
+                    sprintf(res, "fail - id_next_tbd of %zu for self wrong, holds value %zu ",  i+1, id_next_tbd);
+                    goto cleanup_fail; 
+                } else{
+                    printf("PFLX TEST- id_next_tbd of %zu for self correct\n", i+1);
+                    continue;
+                }
+            }
+
+            if (id_next_tbd != NUM_MESSAGES + 1) {
+                sprintf(res, "fail - id_next_tbd of %zu for %zu wrong, holds value %zu ",  i+1, j+1, id_next_tbd);
                 goto cleanup_fail;
             } else{
                 printf("PFLX TEST- id_next_tbd of %zu for %zu correct\n", i+1, j+1);
@@ -636,10 +646,7 @@ void testQueue(char* res, Parser* parser) {
     strcpy(res, "pass");
 }
 
-void* lookup_thread_func(void* arg);
-void* add_thread_func(void* arg);
-
-void* lookup_thread_func(void* arg) {
+static void* lookup_thread_func(void* arg) {
         bst_set* s = (bst_set*)arg;
         for (size_t i = 1; i <= 100; i++) {
             if (bst_set_lookup(s, i, NULL, NULL) != 1) {
@@ -649,13 +656,14 @@ void* lookup_thread_func(void* arg) {
         return (void*)0; // Success
     }
 
-void* add_thread_func(void* arg){
+static void* add_thread_func(void* arg){
         bst_set* s = (bst_set*)arg;
         for (size_t i = 101; i <= 200; i++) {
             bst_set_add(s, i, NULL, 0);
         }
         return NULL;
     }
+
 void testBstSet(char* res, Parser* parser) {
     // Test 1: Initialization
     bst_set* set = bst_set_init();
@@ -817,6 +825,32 @@ void testBstSet(char* res, Parser* parser) {
         strcpy(res, "fail - concurrent final size");
         bst_set_destroy(set);
         return;
+    }
+
+    // test compact function
+    size_t minKey = 0;
+    size_t removed = bst_set_compact_consequent(set, 0, NULL);
+
+    if (removed != 200 || set->size != 0){
+        sprintf(res, "fail - simple compact test compact. removed: %zu, set size: %zu", removed, set->size);
+        bst_set_destroy(set);
+        return;
+    }
+
+    size_t min = 1;
+    while(min < 1000){
+        size_t result = (size_t)rand() % 1000 + 1;
+        if (result == min){
+            size_t removed = bst_set_compact_consequent(set, min, NULL);
+            min += removed + 1;
+        } else if(result > min){
+            bst_set_add(set, (size_t)result, NULL, 0);
+        }
+        if (set->size == 1000){
+            sprintf(res, "fail - compact test compact. min is: %zu, set size: %zu", min, set->size);
+            bst_set_destroy(set);
+            return;
+        }
     }
     
     bst_set_destroy(set);

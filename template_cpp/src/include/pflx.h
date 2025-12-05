@@ -20,7 +20,7 @@ typedef struct pflx{
     
 
     const Host* phonebook;
-    size_t ownMessageID;
+    unsigned int* ownMessageID;
     pthread_mutex_t ownMessageID_mutex;
     delivered_state* next_id_tbd; // was size_t*
     bst_set** id_delivered; // array of maps of size phonebook_size

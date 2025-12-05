@@ -41,11 +41,11 @@ int bst_set_lookup(bst_set* set, size_t key, void** data, size_t* data_size);
 // Destroy the set and free all memory
 void bst_set_destroy(bst_set* set);
 
-// Compact consecutive keys starting from (*lastCon + 1):
-// Repeatedly removes the minimum node if it equals (*lastCon + 1),
-// increments the accumulator, and updates *lastCon accordingly.
+// Compact consecutive keys starting from (lastCon + 1):
+// Repeatedly removes the minimum node if it equals (lastCon + 1),
+// increments the accumulator, and updates lastCon accordingly.
 // if condition is not NULL node will be aggregated only if condition returns 1 (true)
-// Returns the number of removed nodes, or -1 on error (e.g., NULL args).
+// Returns the number of removed nodes, or 0 on error (e.g., NULL args).
 size_t bst_set_compact_consequent(bst_set* set, size_t lastCon, int (*condition)(void* data, size_t data_size));
 
 #endif // BST_SET_H
