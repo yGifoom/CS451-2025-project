@@ -26,7 +26,7 @@ void tests(char* res, Parser* parser){
     
     char* pflx_res = malloc(sizeof(char) * 50);
     testPflx(pflx_res, parser);
-    printf("Test Pflx: %s\n", pflx_res);
+    printf("TEST Pflx: %s\n", pflx_res);
     free(pflx_res);
     
     /*

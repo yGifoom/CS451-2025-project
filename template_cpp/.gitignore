@@ -91,4 +91,6 @@ output/*
 # pycache
 __pycache__/
 
+# logs
 log.txt
+*.log

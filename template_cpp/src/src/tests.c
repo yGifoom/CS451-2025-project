@@ -279,7 +279,7 @@ void testPflx(char* res, Parser* parser){
     }
 
     // Receive all expected deliveries
-    size_t expected_total = N * N * NUM_MESSAGES;
+    size_t expected_total = (2 * (N-1) * NUM_MESSAGES) * N;
     size_t total_delivered = 0;
     size_t max_iterations = expected_total * 20 + 1000; // generous cap
     size_t iter = 0;
@@ -331,7 +331,7 @@ void testPflx(char* res, Parser* parser){
 
     // Verify counts
     if (total_delivered != expected_total) {
-        strcpy(res, "fail - not all messages delivered");
+        sprintf(res, "fail - %zu messages were delivered, but expected %zu", total_delivered, expected_total);
         goto cleanup_fail;
     }
     for (size_t r = 0; r < N; r++) {
@@ -350,11 +350,35 @@ void testPflx(char* res, Parser* parser){
         nanosleep(&ts_100ms, NULL);
     }
 
-    // Verify nonConsequentAcks empty on all nodes
+    // Verify that nextId tbd is NUMMESSAGES + 1 except for self
     for (size_t i = 0; i < N; i++) {
         for (size_t j = 0; j < N; j++) {
-            if (nodes[i]->nonConsequentAcks[j]->size != 0) {
-                strcpy(res, "fail - nonConsequentAcks not empty");
+            size_t id_next_tbd = nodes[i]->next_id_tbd[j].value;
+            if (i == j){
+                if (id_next_tbd != NUM_MESSAGES * (hosts_count - 1) + 1) {
+                    sprintf(res, "fail - id_next_tbd of %zu for self wrong, holds value %zu ",  i+1, id_next_tbd);
+                    goto cleanup_fail; 
+                } else{
+                    printf("PFLX TEST- id_next_tbd of %zu for self correct\n", i+1);
+                    continue;
+                }
+            }
+
+            if (id_next_tbd != NUM_MESSAGES + 1) {
+                sprintf(res, "fail - id_next_tbd of %zu for %zu wrong, holds value %zu ",  i+1, j+1, id_next_tbd);
+                goto cleanup_fail;
+            } else{
+                printf("PFLX TEST- id_next_tbd of %zu for %zu correct\n", i+1, j+1);
+            }
+        }
+    }
+
+    // Verify id_delivered empty on all nodes
+    for (size_t i = 0; i < N; i++) {
+        for (size_t j = 0; j < N; j++) {
+            size_t id_del_len = nodes[i]->id_delivered[j]->size;
+            if (id_del_len != 0) {
+                sprintf(res, "fail - id_delivered not empty, has size %zu ", id_del_len);
                 goto cleanup_fail;
             }
         }

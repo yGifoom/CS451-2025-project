@@ -7,11 +7,11 @@
 #include"parser.h"
 #include <pthread.h>
 
-// New thread-safe state for expectedConsequentAck
+// New thread-safe state for next_id_tbd
 typedef struct {
     size_t value;
     pthread_mutex_t mutex;
-} ack_state;
+} delivered_state;
 
 typedef struct pflx{
     UDP* udpSocket;
@@ -20,10 +20,10 @@ typedef struct pflx{
     
 
     const Host* phonebook;
-    size_t ownMessageID;
+    unsigned int* ownMessageID;
     pthread_mutex_t ownMessageID_mutex;
-    ack_state* expectedConsequentAck; // was size_t*
-    bst_set** nonConsequentAcks; // array of maps of size phonebook_size
+    delivered_state* next_id_tbd; // was size_t*
+    bst_set** id_delivered; // array of maps of size phonebook_size
     
     size_t phonebook_size;
 
@@ -86,7 +86,6 @@ typedef struct{
     size_t messageID;
 
     size_t targetID;
-    int retries;
 } pflx_message;
 
 // initializes message in the pflx format
@@ -95,13 +94,13 @@ pflx_message* pflx_message_init(void* message, size_t messageSize, size_t origin
 // destroys message in the pflx format
 int pflx_message_destroy(pflx_message* message);
 
-// Thread-safe accessors for ack_state
-size_t ack_read(ack_state* s);
+// Thread-safe accessors for delivered_state
+size_t ack_read(delivered_state* s);
 
-void ack_write(ack_state* s, size_t v);
+void ack_write(delivered_state* s, size_t v);
 
 // returns 1 if s-> value > v, -1 if s-> value < v, else 0
-int ack_compare(ack_state* s, size_t v);
+int ack_compare(delivered_state* s, size_t v);
 
 // Thread-safe helpers for graceful stop
 void pflx_request_stop(pflx* pflx);
