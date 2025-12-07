@@ -56,6 +56,8 @@ fifo* fifo_init(pflx* pflx, size_t pid);
 
 int fifo_destroy(fifo* fifo);
 
+fifo_message* fifo_message_copy(fifo_message* msg);
+
 fifo_message* fifo_message_init(void* message, 
     size_t messageSize, size_t messageID, size_t originID, size_t numAcks, size_t relayID);
 

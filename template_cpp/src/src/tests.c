@@ -1003,8 +1003,8 @@ void testFifo(char* res, Parser* parser) {
     size_t hosts_count;
     const Host* hosts = parser_get_hosts(parser, &hosts_count);
     
-    if (hosts_count < 3) {
-        strcpy(res, "fail - need at least 3 hosts for FIFO test");
+    if (hosts_count < 2) {
+        strcpy(res, "fail - need at least 2 hosts for FIFO test");
         return;
     }
     
@@ -1014,92 +1014,104 @@ void testFifo(char* res, Parser* parser) {
         return;
     }
     
-    // Test 1: Sequential test - single broadcaster
-    // Initialize pflx instances for 3 processes
-    short unsigned int port1 = ntohs(hosts[0].port);
-    short unsigned int port2 = ntohs(hosts[1].port);
-    short unsigned int port3 = ntohs(hosts[2].port);
+    // Dynamically allocate arrays for all hosts
+    pflx** pflx_instances = calloc(hosts_count, sizeof(pflx*));
+    fifo** fifo_instances = calloc(hosts_count, sizeof(fifo*));
     
-    pflx* pflx1 = pflx_init(port1, hosts, hosts_count);
-    pflx* pflx2 = pflx_init(port2, hosts, hosts_count);
-    pflx* pflx3 = pflx_init(port3, hosts, hosts_count);
-    
-    if (!pflx1 || !pflx2 || !pflx3) {
-        strcpy(res, "fail - pflx init");
-        if (pflx1) pflx_destroy(pflx1);
-        if (pflx2) pflx_destroy(pflx2);
-        if (pflx3) pflx_destroy(pflx3);
+    if (!pflx_instances || !fifo_instances) {
+        strcpy(res, "fail - allocation");
+        free(pflx_instances);
+        free(fifo_instances);
         return;
+    }
+    
+    // Test 1: Sequential test - single broadcaster
+    // Initialize pflx instances for all processes
+    for (size_t i = 0; i < hosts_count; i++) {
+        short unsigned int port = ntohs(hosts[i].port);
+        pflx_instances[i] = pflx_init(port, hosts, hosts_count);
+        
+        if (!pflx_instances[i]) {
+            strcpy(res, "fail - pflx init");
+            for (size_t j = 0; j < i; j++) pflx_destroy(pflx_instances[j]);
+            free(pflx_instances);
+            free(fifo_instances);
+            return;
+        }
     }
 
     // Initialize FIFO layers
-    fifo* fifo1 = fifo_init(pflx1, 1u);
-    fifo* fifo2 = fifo_init(pflx2, 2u);
-    fifo* fifo3 = fifo_init(pflx3, 3u);
-    
-    if (!fifo1 || !fifo2 || !fifo3) {
-        strcpy(res, "fail - fifo init");
-        if (fifo1) fifo_destroy(fifo1);
-        if (fifo2) fifo_destroy(fifo2);
-        if (fifo3) fifo_destroy(fifo3);
-        return;
+    for (size_t i = 0; i < hosts_count; i++) {
+        fifo_instances[i] = fifo_init(pflx_instances[i], i + 1);
+        
+        if (!fifo_instances[i]) {
+            strcpy(res, "fail - fifo init");
+            for (size_t j = 0; j < i; j++) fifo_destroy(fifo_instances[j]);
+            for (size_t j = 0; j < hosts_count; j++) pflx_destroy(pflx_instances[j]);
+            free(pflx_instances);
+            free(fifo_instances);
+            return;
+        }
     }
     
-    if (fifo_start(fifo1) != 0 || fifo_start(fifo2) != 0 || fifo_start(fifo3) != 0) {
-        strcpy(res, "fail - fifo start");
-        fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-        return;
+    // Start all FIFO instances
+    for (size_t i = 0; i < hosts_count; i++) {
+        if (fifo_start(fifo_instances[i]) != 0) {
+            strcpy(res, "fail - fifo start");
+            for (size_t j = 0; j < hosts_count; j++) {
+                fifo_stop(fifo_instances[j]);
+                fifo_destroy(fifo_instances[j]);
+            }
+            free(pflx_instances);
+            free(fifo_instances);
+            return;
+        }
     }
     
-    // Process 1 broadcasts NUM_MESSAGES messages
+    // Process 0 (first process) broadcasts NUM_MESSAGES messages
     size_t sender_id = 1;
     for (size_t i = 1; i <= NUM_MESSAGES; i++) {
         char message[64];
         snprintf(message, sizeof(message), "%zu %zu", sender_id, i);
         
-        if (fifo_send(fifo1, message, strlen(message)*sizeof(char) + 1, sender_id) != 0) {
+        if (fifo_send(fifo_instances[0], message, strlen(message)*sizeof(char) + 1, sender_id) != 0) {
             strcpy(res, "fail - fifo_send");
-            fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
-            fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
+            for (size_t j = 0; j < hosts_count; j++) {
+                fifo_stop(fifo_instances[j]);
+                fifo_destroy(fifo_instances[j]);
+            }
+            free(pflx_instances);
+            free(fifo_instances);
             return;
         }
     }
     
-    // Collect deliveries at processes 2 and 3
-    size_t delivered_p2[NUM_MESSAGES];
-    size_t delivered_p3[NUM_MESSAGES];
-    size_t count_p2 = 0, count_p3 = 0;
+    // Collect deliveries at all other processes
+    size_t** delivered = calloc(hosts_count, sizeof(size_t*));
+    size_t* delivery_counts = calloc(hosts_count, sizeof(size_t));
     
-    size_t max_iterations = NUM_MESSAGES * 2;
+    for (size_t i = 0; i < hosts_count; i++) {
+        delivered[i] = calloc(NUM_MESSAGES, sizeof(size_t));
+    }
+    
+    size_t max_iterations = NUM_MESSAGES * hosts_count * 2;
     size_t iterations = 0;
+    size_t total_expected = NUM_MESSAGES * (hosts_count - 1);
+    size_t total_delivered = 0;
 
-    while ((count_p2 < NUM_MESSAGES || count_p3 < NUM_MESSAGES) && iterations < max_iterations) {
-        // Try to receive from process 2
-        if (count_p2 < NUM_MESSAGES) {
-            char recv_buf[256] = {0};
-            size_t recv_len = 0;
-            
-            if (fifo_recv(fifo2, recv_buf, &recv_len) == 0) {
-                // Parse delivery format: "<senderId> <messageId>"
-                size_t recv_sender = 0, msg_id = 0;
-                if (sscanf(recv_buf, "%zu %zu", &recv_sender, &msg_id) == 2) {
-                    delivered_p2[count_p2++] = msg_id;
-                    printf("FIFO TEST: p2 just delivered %zu\n", msg_id);fflush(stdout);
-                }else{
-                    printf("FIFO TEST: this is delivered message '%d'\n", *(int*)recv_buf);fflush(stdout);
-                }
-            }
-        }
-        
-        // Try to receive from process 3
-        if (count_p3 < NUM_MESSAGES) {
-            char recv_buf[256] = {0};
-            size_t recv_len = 0;
-            
-            if (fifo_recv(fifo3, recv_buf, &recv_len) == 0) {
-                size_t recv_sender = 0, msg_id = 0;
-                if (sscanf(recv_buf, "%zu %zu", &recv_sender, &msg_id) == 2) {
-                    delivered_p3[count_p3++] = msg_id;
+    while (total_delivered < total_expected && iterations < max_iterations) {
+        // Try to receive from all processes except sender
+        for (size_t proc = 1; proc < hosts_count; proc++) {
+            if (delivery_counts[proc] < NUM_MESSAGES) {
+                char recv_buf[256] = {0};
+                size_t recv_len = 0;
+                
+                if (fifo_recv(fifo_instances[proc], recv_buf, &recv_len) == 0) {
+                    size_t recv_sender = 0, msg_id = 0;
+                    if (sscanf(recv_buf, "%zu %zu", &recv_sender, &msg_id) == 2) {
+                        delivered[proc][delivery_counts[proc]++] = msg_id;
+                        total_delivered++;
+                    }
                 }
             }
         }
@@ -1109,108 +1121,134 @@ void testFifo(char* res, Parser* parser) {
         nanosleep(&ts_1ms, NULL);
     }
     
-    // Verify all messages delivered
-    if (count_p2 != NUM_MESSAGES || count_p3 != NUM_MESSAGES) {
-        strcpy(res, "fail - not all messages delivered");
-        fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
-        fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-        return;
-    }
-    
-    // Verify FIFO ordering - messages should be 1, 2, 3, ..., NUM_MESSAGES
-    for (size_t i = 0; i < NUM_MESSAGES; i++) {
-        if (delivered_p2[i] != i + 1 || delivered_p3[i] != i + 1) {
-            strcpy(res, "fail - FIFO ordering violated");
-            fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
-            fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-            return;
+    // Verify all messages delivered to all receivers
+    for (size_t proc = 1; proc < hosts_count; proc++) {
+        if (delivery_counts[proc] != NUM_MESSAGES) {
+            strcpy(res, "fail - not all messages delivered");
+            goto cleanup_seq;
         }
     }
     
-    // Verify no duplicates
-    for (size_t i = 0; i < NUM_MESSAGES; i++) {
-        for (size_t j = i + 1; j < NUM_MESSAGES; j++) {
-            if (delivered_p2[i] == delivered_p2[j] || delivered_p3[i] == delivered_p3[j]) {
-                strcpy(res, "fail - duplicate delivery");
-                fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
-                fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-                return;
+    // Verify FIFO ordering - messages should be 1, 2, 3, ..., NUM_MESSAGES
+    for (size_t proc = 1; proc < hosts_count; proc++) {
+        for (size_t i = 0; i < NUM_MESSAGES; i++) {
+            if (delivered[proc][i] != i + 1) {
+                strcpy(res, "fail - FIFO ordering violated");
+                goto cleanup_seq;
             }
         }
     }
     
-    fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
-    fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
+    // Verify no duplicates
+    for (size_t proc = 1; proc < hosts_count; proc++) {
+        for (size_t i = 0; i < NUM_MESSAGES; i++) {
+            for (size_t j = i + 1; j < NUM_MESSAGES; j++) {
+                if (delivered[proc][i] == delivered[proc][j]) {
+                    strcpy(res, "fail - duplicate delivery");
+                    goto cleanup_seq;
+                }
+            }
+        }
+    }
     
-    // Test 2: Concurrent test - multiple broadcasters
-    pflx1 = pflx_init(port1, hosts, hosts_count);
-    pflx2 = pflx_init(port2, hosts, hosts_count);
-    pflx3 = pflx_init(port3, hosts, hosts_count);
+cleanup_seq:
+    for (size_t i = 0; i < hosts_count; i++) {
+        fifo_stop(fifo_instances[i]);
+        fifo_destroy(fifo_instances[i]);
+        free(delivered[i]);
+    }
+    free(delivered);
+    free(delivery_counts);
     
-    if (!pflx1 || !pflx2 || !pflx3) {
-        strcpy(res, "fail - pflx init (concurrent)");
-        if (pflx1) pflx_destroy(pflx1);
-        if (pflx2) pflx_destroy(pflx2);
-        if (pflx3) pflx_destroy(pflx3);
+    if (strcmp(res, "pass") != 0 && strlen(res) > 0) {
+        free(pflx_instances);
+        free(fifo_instances);
         return;
     }
     
-    fifo1 = fifo_init(pflx1, 1u);
-    fifo2 = fifo_init(pflx2, 2u);
-    fifo3 = fifo_init(pflx3, 3u);
-    
-    if (!fifo1 || !fifo2 || !fifo3) {
-        strcpy(res, "fail - fifo init (concurrent)");
-        if (fifo1) fifo_destroy(fifo1);
-        if (fifo2) fifo_destroy(fifo2);
-        if (fifo3) fifo_destroy(fifo3);
-        return;
+    // Test 2: Concurrent test - all processes broadcast
+    for (size_t i = 0; i < hosts_count; i++) {
+        short unsigned int port = ntohs(hosts[i].port);
+        pflx_instances[i] = pflx_init(port, hosts, hosts_count);
+        
+        if (!pflx_instances[i]) {
+            strcpy(res, "fail - pflx init (concurrent)");
+            for (size_t j = 0; j < i; j++) pflx_destroy(pflx_instances[j]);
+            free(pflx_instances);
+            free(fifo_instances);
+            return;
+        }
     }
     
-    fifo_start(fifo1); fifo_start(fifo2); fifo_start(fifo3);
+    for (size_t i = 0; i < hosts_count; i++) {
+        fifo_instances[i] = fifo_init(pflx_instances[i], i + 1);
+        
+        if (!fifo_instances[i]) {
+            strcpy(res, "fail - fifo init (concurrent)");
+            for (size_t j = 0; j < i; j++) fifo_destroy(fifo_instances[j]);
+            for (size_t j = 0; j < hosts_count; j++) pflx_destroy(pflx_instances[j]);
+            free(pflx_instances);
+            free(fifo_instances);
+            return;
+        }
+    }
     
-    // All three processes broadcast concurrently
-    pthread_t threads[3];
-    broadcast_data_t bd1 = {fifo1, 1, NUM_MESSAGES};
-    broadcast_data_t bd2 = {fifo2, 2, NUM_MESSAGES};
-    broadcast_data_t bd3 = {fifo3, 3, NUM_MESSAGES};
+    for (size_t i = 0; i < hosts_count; i++) {
+        fifo_start(fifo_instances[i]);
+    }
     
-    pthread_create(&threads[0], NULL, broadcast_thread, &bd1);
-    pthread_create(&threads[1], NULL, broadcast_thread, &bd2);
-    pthread_create(&threads[2], NULL, broadcast_thread, &bd3);
+    // All processes broadcast concurrently
+    pthread_t* threads = calloc(hosts_count, sizeof(pthread_t));
+    broadcast_data_t* broadcast_data = calloc(hosts_count, sizeof(broadcast_data_t));
     
-    for (int i = 0; i < 3; i++) {
+    for (size_t i = 0; i < hosts_count; i++) {
+        broadcast_data[i].f = fifo_instances[i];
+        broadcast_data[i].sender_id = i + 1;
+        broadcast_data[i].num_msgs = NUM_MESSAGES;
+        pthread_create(&threads[i], NULL, broadcast_thread, &broadcast_data[i]);
+    }
+    
+    for (size_t i = 0; i < hosts_count; i++) {
         pthread_join(threads[i], NULL);
     }
     
+    free(threads);
+    free(broadcast_data);
+    
     // Collect all deliveries at each process
-    // Track deliveries per sender: deliveries[process][sender][msg_idx]
-    size_t deliveries[3][3][NUM_MESSAGES];
-    size_t delivery_counts[3][3] = {{0}};
+    // deliveries[process][sender][msg_idx]
+    size_t*** deliveries = calloc(hosts_count, sizeof(size_t**));
+    size_t** delivery_counts_2d = calloc(hosts_count, sizeof(size_t*));
+    
+    for (size_t i = 0; i < hosts_count; i++) {
+        deliveries[i] = calloc(hosts_count, sizeof(size_t*));
+        delivery_counts_2d[i] = calloc(hosts_count, sizeof(size_t));
+        for (size_t j = 0; j < hosts_count; j++) {
+            deliveries[i][j] = calloc(NUM_MESSAGES, sizeof(size_t));
+        }
+    }
     
     iterations = 0;
-    max_iterations = NUM_MESSAGES * 3 * 3;
-    size_t total_expected = NUM_MESSAGES * 3 * 3; // 3 senders * 3 receivers * NUM_MESSAGES
-    size_t total_delivered = 0;
+    max_iterations = NUM_MESSAGES * hosts_count * hosts_count * 2;
+    total_expected = NUM_MESSAGES * hosts_count * hosts_count; // all senders * all receivers * NUM_MESSAGES
+    total_delivered = 0;
     
     while (total_delivered < total_expected && iterations < max_iterations) {
-        fifo* fifos[3] = {fifo1, fifo2, fifo3};
-        
-        for (int proc = 0; proc < 3; proc++) {
+        for (size_t proc = 0; proc < hosts_count; proc++) {
             char recv_buf[256] = {0};
             size_t recv_len = 0;
             
-            if (fifo_recv(fifos[proc], recv_buf, &recv_len) == 0) {
+            if (fifo_recv(fifo_instances[proc], recv_buf, &recv_len) == 0) {
                 size_t sender = 0, msg_id = 0;
                 if (sscanf(recv_buf, "%zu %zu", &sender, &msg_id) == 2 && 
-                    sender >= 1 && sender <= 3 && msg_id >= 1 && msg_id <= NUM_MESSAGES) {
+                    sender >= 1 && sender <= hosts_count && msg_id >= 1 && msg_id <= NUM_MESSAGES) {
                     
                     size_t sender_idx = sender - 1;
-                    size_t count = delivery_counts[proc][sender_idx];
+                    size_t count = delivery_counts_2d[proc][sender_idx];
                     
                     if (count < NUM_MESSAGES) {
                         deliveries[proc][sender_idx][count] = msg_id;
-                        delivery_counts[proc][sender_idx]++;
+                        delivery_counts_2d[proc][sender_idx]++;
                         total_delivered++;
                     }
                 }
@@ -1223,34 +1261,45 @@ void testFifo(char* res, Parser* parser) {
     }
     
     // Verify all messages delivered to all processes
-    for (int proc = 0; proc < 3; proc++) {
-        for (int sender = 0; sender < 3; sender++) {
-            if (delivery_counts[proc][sender] != NUM_MESSAGES) {
+    for (size_t proc = 0; proc < hosts_count; proc++) {
+        for (size_t sender = 0; sender < hosts_count; sender++) {
+            if (delivery_counts_2d[proc][sender] != NUM_MESSAGES) {
                 strcpy(res, "fail - concurrent: not all messages delivered");
-                fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
-                fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-                return;
+                goto cleanup_concurrent;
             }
         }
     }
     
     // Verify FIFO ordering per sender
-    for (int proc = 0; proc < 3; proc++) {
-        for (int sender = 0; sender < 3; sender++) {
+    for (size_t proc = 0; proc < hosts_count; proc++) {
+        for (size_t sender = 0; sender < hosts_count; sender++) {
             for (size_t i = 0; i < NUM_MESSAGES; i++) {
                 if (deliveries[proc][sender][i] != i + 1) {
                     strcpy(res, "fail - concurrent: FIFO ordering violated");
-                    fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
-                    fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-                    return;
+                    goto cleanup_concurrent;
                 }
             }
         }
     }
     
-    fifo_stop(fifo1); fifo_stop(fifo2); fifo_stop(fifo3);
-    fifo_destroy(fifo1); fifo_destroy(fifo2); fifo_destroy(fifo3);
-    
     strcpy(res, "pass");
+    printf("FIFO TEST: passed\n"); fflush(stdout);
+    
+cleanup_concurrent:
+    for (size_t i = 0; i < hosts_count; i++) {
+        fifo_stop(fifo_instances[i]);
+        fifo_destroy(fifo_instances[i]);
+        for (size_t j = 0; j < hosts_count; j++) {
+            free(deliveries[i][j]);
+        }
+        free(deliveries[i]);
+        free(delivery_counts_2d[i]);
+    }
+    free(deliveries);
+    free(delivery_counts_2d);
+    free(pflx_instances);
+    free(fifo_instances);
+    printf("FIFO TEST: CLEANUP CONCURRENT FINISHED\n"); fflush(stdout);
+
     return;
 }

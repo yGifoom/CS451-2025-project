@@ -38,7 +38,7 @@ void tests(char* res, Parser* parser){
     */
     char* fifo_res = malloc(sizeof(char) * 100);
     testFifo(fifo_res, parser);
-    printf("Test FIFO: %s\n", fifo_res);
+    printf("TEST FIFO: %s\n", fifo_res);
     free(fifo_res);
     /*
     char* node_res = malloc(sizeof(char) * 50);

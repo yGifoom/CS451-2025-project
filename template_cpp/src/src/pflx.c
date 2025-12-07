@@ -120,7 +120,7 @@ int pflx_send(pflx* pflx, void* message, size_t messageSize, size_t originID, si
     pthread_mutex_unlock(&pflx->ownMessageID_mutex);
 
     // Print the real payload size, not sizeof(pointer)
-    printf("%d-PFLX SEND: I am sending '%s', message of id '%zu' to process: %zu\n", pflx->udpSocket->sockfd, (char*)msg->message, msg->messageID, msg->targetID); fflush(stdout);
+    printf("%d-PFLX SEND: I am sending message of id '%zu' to process: %zu\n", pflx->udpSocket->sockfd, msg->messageID, msg->targetID); fflush(stdout);
     return 0;
 }
 
@@ -209,8 +209,7 @@ int _pflx_send_routine(pflx* pflx){
             if(ok || ack_read(&pflx->next_id_tbd[originIdx]) > sentMsgBstKey){
                 // already acked -> deliver
                 pflx_message* msgToUp = (pflx_message*)popped;
-                printf("%d-PFLX SEND ROUTINE: pushing into upQueue '%s'\n", pflx->udpSocket->sockfd, 
-                    (char*)msgToUp->message); fflush(stdout);
+                printf("%d-PFLX SEND ROUTINE: pushing into upQueue \n", pflx->udpSocket->sockfd); fflush(stdout);
                 queue_push(pflx->upQueue, popped, dataSize);
             } else if (frame != NULL){
                 lenMessageSent = udp_send(pflx->udpSocket, 
@@ -218,11 +217,11 @@ int _pflx_send_routine(pflx* pflx){
                                     ntohs(pflx->phonebook[targetIdx].port), 
                                     frame, frame_size);
                 if (lenMessageSent == 0){
-                    printf("%d-PFLX SEND ROUTINE: failed to sending msg '%s' of ID %zu to target %zu\n", pflx->udpSocket->sockfd, 
-                    (char*)msg_to_send->message, msg_to_send->messageID, msg_to_send->targetID); fflush(stdout);
+                    printf("%d-PFLX SEND ROUTINE: failed to sending msg of ID %zu to target %zu\n", pflx->udpSocket->sockfd, 
+                    msg_to_send->messageID, msg_to_send->targetID); fflush(stdout);
                 }else{
-                    printf("%d-PFLX SEND ROUTINE: sending '%s' of ID %zu to target %zu\n", pflx->udpSocket->sockfd, 
-                    (char*)msg_to_send->message, msg_to_send->messageID, msg_to_send->targetID); fflush(stdout);
+                    printf("%d-PFLX SEND ROUTINE: sending msg of ID %zu to target %zu\n", pflx->udpSocket->sockfd, 
+                    msg_to_send->messageID, msg_to_send->targetID); fflush(stdout);
                 }
                 // put message back in, we will be waiting for ack
                 res = queue_push(pflx->downQueue, msg_to_send, sizeof(pflx_message*));
@@ -260,7 +259,7 @@ int pflx_recv(pflx* pflx, void* message, size_t* messageSize){
 
     memcpy(message, msg->message, msg->messageSize);
     *messageSize = msg->messageSize;
-    printf("%d-I am recieving '%s', message of len '%zu'\n", pflx->udpSocket->sockfd, (char*)message, *messageSize); fflush(stdout);
+    printf("%d-I am recieving a message of len '%zu'\n", pflx->udpSocket->sockfd, *messageSize); fflush(stdout);
     pflx_message_destroy(msg);
     return 0;
 }
@@ -300,7 +299,7 @@ int _pflx_recv_routine(pflx* pflx){
         const size_t hdr_size = hdr_words * sizeof(size_t);
         if ((size_t)len < hdr_size) {
             // malformed, ignore
-            printf("%d-PFLX RECV ROUTINE: here's the malformed buffer: '%s'\n", pflx->udpSocket->sockfd, buffer); fflush(stdout);
+            printf("%d-PFLX RECV ROUTINE: here's the malformed buffer\n", pflx->udpSocket->sockfd); fflush(stdout);
 
             continue;
         }
@@ -420,7 +419,7 @@ int _pflx_recv_routine(pflx* pflx){
 
         // Any other message
         } else if (msg_recvd->message){
-            printf("%d-PFLX RECV ROUTINE: recvd message '%s', from %zu\n", pflx->udpSocket->sockfd, (char*)msg_recvd->message, msg_recvd->originID); fflush(stdout);
+            printf("%d-PFLX RECV ROUTINE: recvd message from %zu\n", pflx->udpSocket->sockfd, msg_recvd->originID); fflush(stdout);
             // strictly reciever behaviour
             
             // drop if too many packets

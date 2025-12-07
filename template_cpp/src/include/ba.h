@@ -40,7 +40,7 @@ size_t ba_where_0(ba* ba, size_t** indexes_0s, size_t* count_0s);
 // unsafe copy bit array to a buffer
 void* ba_unsafe_copy(ba* ba);
 
-// not implemented
+
 // construct a bit array starting from a 
 // buffer of 1s & 0s
 ba* ba_construct(void* bits, size_t bitsLen);

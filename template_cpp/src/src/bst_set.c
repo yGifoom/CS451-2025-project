@@ -70,17 +70,10 @@ static bst_node* insert_helper(bst_node* node, size_t key, int* status, void* da
     if (!node) {
         *status = 0;
         bst_node* new_node = create_node(key);
-        if (new_node && data && data_size > 0) {
-            if ( data_size != 0 || new_node->data != NULL) {
-                new_node->data = malloc(data_size);
-                memcpy(new_node->data, data, data_size);
-            } else{
-                new_node->data = NULL; 
-            }
-            new_node->data_size = data_size;
-        } else if (new_node) {
-            new_node->data = NULL;
-            new_node->data_size = 0;
+        if (new_node) {
+            // Store pointer only; caller owns lifetime
+            new_node->data = data;
+            new_node->data_size = data ? data_size : 0;
         }
         return new_node;
     }
@@ -139,11 +132,6 @@ static bst_node* delete_helper(bst_node* node, size_t key, int* status) {
         if (!node->left || !node->right) {
             bst_node* temp = node->left ? node->left : node->right;
             
-            // Free the data of the node being deleted
-            if (node->data != NULL){
-                free(node->data);
-            }
-            
             // If no children, just free the node
             if (!temp) {
                 free(node);
@@ -155,24 +143,11 @@ static bst_node* delete_helper(bst_node* node, size_t key, int* status) {
                 return node;
             }
         } else {
-            // Two children: find inorder successor
+            // Two children: move successor’s key/data pointer, then delete successor
             bst_node* temp = find_min(node->right);
             node->key = temp->key;
-            
-            // Free old data and copy new data from successor
-            if (node->data != NULL) {
-                free(node->data);
-            }
-            if (temp->data == NULL) {
-                node->data = NULL;
-                node->data_size = 0;
-            } else {
-                node->data = malloc(temp->data_size);
-                if (node->data) {
-                    memcpy(node->data, temp->data, temp->data_size);
-                    node->data_size = temp->data_size;
-                }
-            }
+            node->data = temp->data;
+            node->data_size = temp->data_size;
             node->right = delete_helper(node->right, temp->key, status);
         }
     }
@@ -222,10 +197,8 @@ static int lookup_helper(bst_node* node, size_t key, void** data, size_t* data_s
 
 static void destroy_helper(bst_node* node) {
     if (!node) return;
-    
     destroy_helper(node->left);
     destroy_helper(node->right);
-    free(node->data);
     free(node);
 }
 
