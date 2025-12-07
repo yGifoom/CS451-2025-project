@@ -124,7 +124,9 @@ int node_loop(Node *node) {
                 expectedMsgs--;
             }
         }
+        printf("%zu-NODE: expectedmsg: %zu, pflx_network_status: %d\n", node->processId, expectedMsgs, pflx_network_status(node->socket->pflx_layer)); fflush(stdout);
         if (expectedMsgs == 0 && pflx_network_status(node->socket->pflx_layer) == 0){
+            printf("%zu-NODE: SHUTTING DOWN NODE\n", node->processId); fflush(stdout);
             break;
         }
 
@@ -177,9 +179,7 @@ int node_loop(Node *node) {
     }
     
     int fifo_stop_res = fifo_stop(node->socket);
-    if(fifo_stop_res != 0){
-        
-    }
+
     free(buffer);
     node_destroy(node);
     

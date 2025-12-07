@@ -68,7 +68,7 @@ int _pflx_recv_routine(pflx* pflx);
 // returns -1 if err
 int pflx_network_status(pflx* pflx);
 
-// changes status of net atomically
+// changes status of net to 0 atomically
 // returns -1 if err
 int pflx_network_change_status(pflx* pflx);
 

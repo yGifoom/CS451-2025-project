@@ -283,6 +283,7 @@ int _pflx_recv_routine(pflx* pflx){
             // Timeout occurred
             network_how_busy--; 
             if (network_how_busy < 0){pflx_network_change_status(pflx);}
+            printf("%d-PFLX RECV ROUTINE: NETWORK NOT BUSY: %d\n", pflx->udpSocket->sockfd, pflx_network_status(pflx)); fflush(stdout);
             continue;
         }
         network_how_busy = 5;
@@ -511,7 +512,7 @@ int pflx_network_change_status(pflx* pflx){
     if (err != 0){
         return -1;
     }
-    pflx->network_busy = pflx->network_busy == 0 ? 1 : 0;
+    pflx->network_busy = 0;
     int v =  pflx->network_busy;
     err = pthread_mutex_unlock(&pflx->network_busy_mutex);
     if (err != 0){
