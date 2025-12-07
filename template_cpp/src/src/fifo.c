@@ -173,7 +173,9 @@ int fifo_send_routine(fifo* fifo){
             pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
         } else {
             pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
-            
+            queue_push(fifo->downQueue, msgToSend, msgSize);
+            continue;
+            /* USELESS AS PFLX NETWORK IS LOSSLESS
             // broadcast only when pflx has responded with something
             // broadcasting when no new acks have been recieved is congests the network
             size_t nOfAcks = ba_sum(msgToSend->acks);
@@ -189,6 +191,7 @@ int fifo_send_routine(fifo* fifo){
                 ba_merge(Msg->acks, msgToSend->acks);
                 ba_merge(msgToSend->acks, Msg->acks);
                 }
+            */
         }
         
         // BROADCAST
@@ -224,8 +227,8 @@ int fifo_recv_routine(fifo* fifo){
         if (res != 0){
             if (res == ETIMEDOUT){
                 printf("%zu-FIFO RECV ROUTINE: pflx_recv timed out\n", fifo->pid); fflush(stdout);
-                for(int i = 0; i<3; i++){
-                    printf("%zu-FIFO RECV ROUTINE: for process %d next tbd %zu\n", fifo->pid, i+1, fifo->next_id_tbd[i]); fflush(stdout);
+                for(size_t i = 0; i<fifo->pflx_layer->phonebook_size; i++){
+                    printf("%zu-FIFO RECV ROUTINE: for process %zu next tbd %zu\n", fifo->pid, i+1, fifo->next_id_tbd[i]); fflush(stdout);
                 }
                 continue;
             }
@@ -269,10 +272,11 @@ int fifo_recv_routine(fifo* fifo){
             printf("%zu-FIFO RECV ROUTINE: not first time recvieving msgID %zu of OriginID %zu\n", fifo->pid, 
             msgRecvd->messageID, msgRecvd->originID); fflush(stdout);
             
-            // I have to book keep that my message was recieved by target process 
-            if (msgRecvd->originID == fifo->pid){
-                ba_add(msgRecvd->acks, targetIdx);
-            }
+            // I am adding all that I can reasonably add so that no cornercases are left
+            ba_add(msgRecvd->acks, targetIdx);
+            ba_add(msgRecvd->acks, originIdx);
+            ba_add(msgRecvd->acks, relayIdx);
+            ba_add(msgRecvd->acks, fifo->pid - 1); // convertion pid -> index
 
             // Merge into canonical;
             if (canonical == NULL){
@@ -289,14 +293,32 @@ int fifo_recv_routine(fifo* fifo){
         } else{
             // first time I recieve this message 
             // i.e. fifo->pid != msgRecvd->origin as before broadcasting I save into canonical
+            // I am adding all that I can reasonably add so that no cornercases are left
             ba_add(msgRecvd->acks, fifo->pid - 1);
-            printf("%zu-FIFO RECV ROUTINE: first time recvieving msgID %zu of OriginID %zu\n", fifo->pid, 
+            ba_add(msgRecvd->acks, originIdx);
+            ba_add(msgRecvd->acks, relayIdx);
+
+            printf("%zu-FIFO RECV ROUTINE: first time receiving msgID %zu of OriginID %zu\n", fifo->pid, 
                 msgRecvd->messageID, msgRecvd->originID); fflush(stdout);
-            // naive retransmit
-            //fifo_broadcast_missing(fifo, msgRecvd); // TODO
-            bst_set_add(fifo->id_tbd[originIdx], hdr[2], (void*)msgRecvd, sizeof(fifo_message));
+            
+            int result_add = bst_set_add(fifo->id_tbd[originIdx], hdr[2], (void*)msgRecvd, sizeof(fifo_message));
+            if(result_add == 1){
+                printf("%zu-FIFO RECV ROUTINE: key already exists for msgID %zu of OriginID %zu in id_tbd! PANIC\n", fifo->pid, 
+                msgRecvd->messageID, msgRecvd->originID); fflush(stdout); 
+                free(popped);
+                return 0;
+            } else if (result_add == -1){
+                printf("%zu-FIFO RECV ROUTINE: error adding msgID %zu of OriginID %zu to id_tbd! PANIC\n", fifo->pid, 
+                msgRecvd->messageID, msgRecvd->originID); fflush(stdout); 
+                free(popped);
+                return 0;
+            }
+
             stored_as_canonical = 1;
             canonical = msgRecvd;
+
+            // naive retransmit
+            fifo_broadcast_missing(fifo, canonical);
         }
         pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
 
@@ -305,7 +327,7 @@ int fifo_recv_routine(fifo* fifo){
         if( fifoDeliverRes == 0){
             // was not delivered 
         } else if(fifoDeliverRes == -1){
-            printf("%zu-FIFO RECV ROUTINE: Deliver panicked for msgID %zu of OriginID %zu\n", fifo->pid, 
+            printf("%zu-FIFO RECV ROUTINE: deliver panicked for msgID %zu of OriginID %zu\n", fifo->pid, 
                 msgRecvd->messageID, msgRecvd->originID); fflush(stdout);
             free(popped);
             return 1;
@@ -368,8 +390,8 @@ int fifo_deliver(fifo* fifo, fifo_message* msg){
             break;
         }
     }
-    printf("%zu-FIFO DELIVER: succ is %d for msgID: %zu originID: %zu next_tbd: %zu, #delivered: %d\n", fifo->pid, succ,
-        firstMsgID, firstOriginID, fifo->next_id_tbd[originIdx], nOfDelivered); fflush(stdout);
+    printf("%zu-FIFO DELIVER: succ is %d for msgID: %zu originID: %zu next_tbd: %zu, #delivered: %d as MessageID: %zu was has %zu acks\n", fifo->pid, succ,
+        firstMsgID, firstOriginID, fifo->next_id_tbd[originIdx], nOfDelivered, msg->messageID, ba_sum(msg->acks)); fflush(stdout);
     pthread_mutex_unlock(&fifo->tbd_mutexes[originIdx]);
     return succ;
 }
@@ -673,6 +695,9 @@ fifo_message* fifo_message_init(void* message,
     fifoMsg->messageSize = messageSize;
     fifoMsg->acks = ba_init(numAcks);
     ba_add(fifoMsg->acks, relayID-1); // from id to index
+    if(originID != relayID){
+        ba_add(fifoMsg->acks, originID-1);
+    }
     fifoMsg->messageID = messageID;
     fifoMsg->originID = originID;
     fifoMsg->relayID = relayID;

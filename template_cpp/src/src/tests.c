@@ -999,6 +999,7 @@ void testBa(char* res, Parser* parser) {
 }
 
 void testFifo(char* res, Parser* parser) {
+    strcpy(res, "pass");
     // Get host information from parser
     size_t hosts_count;
     const Host* hosts = parser_get_hosts(parser, &hosts_count);
@@ -1160,9 +1161,10 @@ cleanup_seq:
     free(delivered);
     free(delivery_counts);
     
-    if (strcmp(res, "pass") != 0 && strlen(res) > 0) {
+    if ((strcmp(res, "pass") != 0) && strlen(res) > 0) {
         free(pflx_instances);
         free(fifo_instances);
+        printf("FIFO TEST: fail, %s\n", res);fflush(stdout);
         return;
     }
     
@@ -1176,6 +1178,8 @@ cleanup_seq:
             for (size_t j = 0; j < i; j++) pflx_destroy(pflx_instances[j]);
             free(pflx_instances);
             free(fifo_instances);
+            printf("FIFO TEST: fail - pflx init (concurrent)\n");fflush(stdout);
+
             return;
         }
     }
@@ -1189,6 +1193,8 @@ cleanup_seq:
             for (size_t j = 0; j < hosts_count; j++) pflx_destroy(pflx_instances[j]);
             free(pflx_instances);
             free(fifo_instances);
+            printf("FIFO TEST: fail - fifo init (concurrent)\n");fflush(stdout);
+            
             return;
         }
     }
@@ -1265,6 +1271,7 @@ cleanup_seq:
         for (size_t sender = 0; sender < hosts_count; sender++) {
             if (delivery_counts_2d[proc][sender] != NUM_MESSAGES) {
                 strcpy(res, "fail - concurrent: not all messages delivered");
+                printf("FIFO TEST: concurrent failed\n"); fflush(stdout);
                 goto cleanup_concurrent;
             }
         }
@@ -1276,6 +1283,8 @@ cleanup_seq:
             for (size_t i = 0; i < NUM_MESSAGES; i++) {
                 if (deliveries[proc][sender][i] != i + 1) {
                     strcpy(res, "fail - concurrent: FIFO ordering violated");
+                    printf("FIFO TEST: concurrent failed\n"); fflush(stdout);
+
                     goto cleanup_concurrent;
                 }
             }
