@@ -14,6 +14,7 @@
 #include<pthread.h>
 #include<string.h>
 #include<time.h>
+#include<sys/time.h>
 
 // Forward declarations for thread functions
 void* popper_thread(void* arg);
@@ -476,6 +477,10 @@ void testNodeSeq(char* res, Parser* parser) {
     }
     printf("All nodes initialized!\nStarting node loops in separate threads...\n");
     
+    // Start timer
+    struct timeval start_time, end_time;
+    gettimeofday(&start_time, NULL);
+    
     // Start all nodes in separate threads
     pthread_t* threads = malloc(hosts_count * sizeof(pthread_t));
     node_thread_data_t* thread_data = malloc(hosts_count * sizeof(node_thread_data_t));
@@ -511,6 +516,13 @@ void testNodeSeq(char* res, Parser* parser) {
             return;
         }
     }
+    
+    // Stop timer
+    gettimeofday(&end_time, NULL);
+    
+    // Calculate elapsed time in milliseconds
+    long elapsed_ms = (end_time.tv_sec - start_time.tv_sec) * 1000L + 
+                      (end_time.tv_usec - start_time.tv_usec) / 1000L;
     
     free(threads);
     free(thread_data);
@@ -691,7 +703,11 @@ void testNodeSeq(char* res, Parser* parser) {
         }
     }
     
-    strcpy(res, "pass");
+    // Calculate total messages and throughput
+    size_t total_messages = NUM_MESSAGES * hosts_count * hosts_count;
+    double messages_per_sec = (double)total_messages / ((double)elapsed_ms / 1000.0);
+    
+    sprintf(res, "pass - %ld ms elapsed, %.2f msg/sec", elapsed_ms, messages_per_sec);
 
 cleanup_sets:
     for (size_t proc = 0; proc < hosts_count; proc++) {

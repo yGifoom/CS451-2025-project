@@ -566,6 +566,12 @@ int fifo_start(fifo* fifo){
 
 int fifo_stop(fifo* fifo){
     printf("%zu-FIFO STOP: stopping fifo\n", fifo->pid); fflush(stdout);
+    
+    // Set stop flag FIRST before stopping pflx
+    atomic_store_explicit(&fifo->shouldStop, 1, memory_order_release);
+    printf("%zu-FIFO STOP: stop flag set\n", fifo->pid); fflush(stdout);
+    
+    // Stop pflx which will wake recv_routine
     int res = pflx_stop(fifo->pflx_layer);
     if (res != 0) {
         printf("%zu-FIFO STOP: failed to stop pflx\n", fifo->pid); fflush(stdout);
@@ -574,13 +580,9 @@ int fifo_stop(fifo* fifo){
 
     _threads_entry* e = _thr_get(fifo, 0);
     if (!e) {
-        printf("%zu-FIFO STOP: failed to get threads entry\n", fifo->pid); fflush(stdout);
-        return -1;
+        printf("%zu-FIFO STOP: no threads entry found\n", fifo->pid); fflush(stdout);
+        return 0; // Already stopped
     }
-
-    // reset graceful stop flag
-    atomic_store_explicit(&fifo->shouldStop, 1, memory_order_release);
-    printf("%zu-FIFO STOP: stop flag set\n", fifo->pid); fflush(stdout);
 
     // Wake sender loop (if waiting on downQueue)
     if (e->send_started) {
@@ -593,11 +595,13 @@ int fifo_stop(fifo* fifo){
         printf("%zu-FIFO STOP: joining sender thread\n", fifo->pid); fflush(stdout);
         pthread_join(e->send_tid, NULL); 
         e->send_started = 0; 
+        printf("%zu-FIFO STOP: sender thread joined\n", fifo->pid); fflush(stdout);
     }
     if (e->recv_started) { 
         printf("%zu-FIFO STOP: joining receiver thread\n", fifo->pid); fflush(stdout);
         pthread_join(e->recv_tid, NULL); 
-        e->recv_started = 0; 
+        e->recv_started = 0;
+        printf("%zu-FIFO STOP: receiver thread joined\n", fifo->pid); fflush(stdout);
     }
 
     _thr_remove(fifo);

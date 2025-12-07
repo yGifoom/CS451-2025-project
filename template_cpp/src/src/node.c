@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE      199309L
 #include"node.h"
 #include"pflx.h"
 #include"fifo.h"
@@ -41,9 +42,12 @@ static void stop(int sig) {
         logger_flush(g_current_node->logger);
     }
 
-    // stop network
-    pflx_stop(g_current_node->socket->pflx_layer);
-    fifo_stop(g_current_node->socket);
+    // IMPORTANT: Gracefully stop network in correct order
+    if (g_current_node && g_current_node->socket) {
+        fifo_stop(g_current_node->socket);
+        fifo_destroy(g_current_node->socket);
+        g_current_node->socket = NULL;
+    }
     
     exit(0);
 }
@@ -178,14 +182,24 @@ int node_loop(Node *node) {
         logger_flush(node->logger);
     }
     
+    printf("%zu-NODE: stopping fifo\n", node->processId); fflush(stdout);
+    
+    // Stop in correct order: fifo first (which stops pflx internally)
     int fifo_stop_res = fifo_stop(node->socket);
+    if (fifo_stop_res != 0) {
+        printf("%zu-NODE: WARNING - fifo_stop returned %d\n", node->processId, fifo_stop_res);
+    }
+    
+    // Give threads time to exit cleanly
+    struct timespec ts_1s = { .tv_sec = 1, .tv_nsec = 0 };
+    nanosleep(&ts_1s, NULL);
 
     free(buffer);
     node_destroy(node);
     
     // Clear global pointer
     g_current_node = NULL;
-    
+    printf("NODE: exiting\n"); fflush(stdout);
     return 0;
 }
 

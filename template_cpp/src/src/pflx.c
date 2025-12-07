@@ -67,27 +67,37 @@ int pflx_start(pflx* pflx){
 
 int pflx_stop(pflx* pflx){
     _threads_entry* e = _thr_get(pflx, 0);
-    if (!e) return -1;
+    if (!e) {
+        printf("%d-PFLX STOP: no entry found (already stopped or never started)\n", 
+               pflx->udpSocket->sockfd); 
+        fflush(stdout);
+        return 0; // Not an error - already stopped
+    }
 
-    // Request graceful stop
+    // Request graceful stop FIRST
     pflx_request_stop(pflx);
 
-    // Wake sender loop (if waiting on downQueue)
+    // Wake sender loop (if waiting on downQueue) BEFORE joining
     if (e->send_started) {
         (void)queue_push(pflx->downQueue, PFLX_SHUTDOWN_SENTINEL, sizeof(pflx_message*));
     }
 
     // Join threads BEFORE removing entry
     if (e->send_started) { 
+        printf("%d-PFLX STOP: joining sender thread\n", pflx->udpSocket->sockfd); fflush(stdout);
         pthread_join(e->send_tid, NULL); 
-        e->send_started = 0; 
+        e->send_started = 0;
+        printf("%d-PFLX STOP: sender joined\n", pflx->udpSocket->sockfd); fflush(stdout);
     }
     if (e->recv_started) { 
+        printf("%d-PFLX STOP: joining receiver thread\n", pflx->udpSocket->sockfd); fflush(stdout);
         pthread_join(e->recv_tid, NULL); 
-        e->recv_started = 0; 
+        e->recv_started = 0;
+        printf("%d-PFLX STOP: receiver joined\n", pflx->udpSocket->sockfd); fflush(stdout);
     }
 
     _thr_remove(pflx);
+    printf("%d-PFLX STOP: entry removed\n", pflx->udpSocket->sockfd); fflush(stdout);
     return 0;
 }
 
@@ -131,8 +141,9 @@ int _pflx_send_routine(pflx* pflx){
     size_t dataSize;
 
     while (1){
-        // If stop requested and we aren't blocked, exit
+        // Check stop flag at loop start
         if (pflx_should_stop(pflx)) {
+            printf("%d-PFLX SEND ROUTINE: stop requested, exiting\n", pflx->udpSocket->sockfd); fflush(stdout);
             break;
         }
 
@@ -239,6 +250,7 @@ int _pflx_send_routine(pflx* pflx){
     }
 
     free(frame);
+    printf("%d-PFLX SEND ROUTINE: exited cleanly\n", pflx->udpSocket->sockfd); fflush(stdout);
     return 0;
 }
 
@@ -491,6 +503,7 @@ int _pflx_recv_routine(pflx* pflx){
         }
     }
     free(buffer);
+    printf("%d-PFLX RECV ROUTINE: exited cleanly\n", pflx->udpSocket->sockfd); fflush(stdout);
     return 0;
 }
 
