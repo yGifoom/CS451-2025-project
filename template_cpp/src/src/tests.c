@@ -416,93 +416,304 @@ cleanup_fail:
     }
     // res already set above
 }
+// Thread function wrapper for node_loop
+typedef struct {
+    Node* node;
+    int result;
+} node_thread_data_t;
 
+static void* node_thread_wrapper(void* arg) {
+        node_thread_data_t* data = (node_thread_data_t*)arg;
+        data->result = node_loop(data->node);
+        return NULL;
+    }
+    
 void testNodeSeq(char* res, Parser* parser) {
     // Get host information from parser
     size_t hosts_count;
     const Host* hosts = parser_get_hosts(parser, &hosts_count);
     
-    if (hosts_count != 2) {
-        strcpy(res, "fail - need 2 hosts");
+    if (hosts_count < 2) {
+        strcpy(res, "fail - need at least 2 hosts");
         return;
     }
+    
+    // Sleep for hosts_count seconds before starting test
+    struct timespec ts_sleep = { .tv_sec = (time_t)hosts_count, .tv_nsec = 0 };
+    nanosleep(&ts_sleep, NULL);
     
     const size_t NUM_MESSAGES = parser_get_num_messages(parser);
     if (NUM_MESSAGES == 0) {
         strcpy(res, "fail - no messages in config");
         return;
     }
-    
-    const size_t nodeId = parser_get_id(parser);
 
-    // Create temporary log files
-    const char* node_log = parser_get_output_path(parser);
-    printf("initializing node....\n");
-    
-    // Initialize nodes using node_init
-    Node* node = node_init(nodeId, NUM_MESSAGES, hosts, hosts_count, node_log);
-    if (!node) {
-        strcpy(res, "fail - node init");
-        return;
+    // Clean up output files before test
+    char** output_files = malloc(hosts_count * sizeof(char*));
+    for (size_t i = 0; i < hosts_count; i++) {
+        output_files[i] = malloc(256);
+        snprintf(output_files[i], 256, "../example/output/%zu.output", i + 1);
+        FILE* f = fopen(output_files[i], "w");
+        if (f) fclose(f);
     }
-    printf("node initialized!\nstarting loop\n");
-    
 
-    // this will block indefinetly, or until it crashes
-    node_loop(node);
+    printf("Initializing %zu nodes...\n", hosts_count);
     
-    printf("loop finished! now checking results....\n");
-    
-    // Verify sender output
-    FILE* node_file = fopen(node_log, "r");
-    if (!node_file) {
-        strcpy(res, "fail - cannot open node log");
-        return;
-    }
-    
-    char line[256];
-    if(nodeId < hosts_count){
-        for (size_t i = 1; i <= NUM_MESSAGES; i++) {
-            if (!fgets(line, sizeof(line), node_file)) {
-                strcpy(res, "fail - sender missing lines");
-                fclose(node_file);
-                return;
+    // Initialize all nodes
+    Node** nodes = malloc(hosts_count * sizeof(Node*));
+    for (size_t i = 0; i < hosts_count; i++) {
+        nodes[i] = node_init(i + 1, NUM_MESSAGES, hosts, hosts_count, output_files[i]);
+        if (!nodes[i]) {
+            sprintf(res, "fail - node init for process %zu", i + 1);
+            for (size_t j = 0; j < i; j++) {
+                if (nodes[j]) free(nodes[j]);
             }
+            free(nodes);
+            for (size_t j = 0; j < hosts_count; j++) free(output_files[j]);
+            free(output_files);
+            return;
+        }
+    }
+    printf("All nodes initialized!\nStarting node loops in separate threads...\n");
+    
+    // Start all nodes in separate threads
+    pthread_t* threads = malloc(hosts_count * sizeof(pthread_t));
+    node_thread_data_t* thread_data = malloc(hosts_count * sizeof(node_thread_data_t));
+    
+    for (size_t i = 0; i < hosts_count; i++) {
+        thread_data[i].node = nodes[i];
+        thread_data[i].result = 0;
+        if (pthread_create(&threads[i], NULL, node_thread_wrapper, &thread_data[i]) != 0) {
+            sprintf(res, "fail - failed to create thread for node %zu", i + 1);
+            for (size_t j = 0; j < i; j++) {
+                pthread_cancel(threads[j]);
+                pthread_join(threads[j], NULL);
+            }
+            free(threads);
+            free(thread_data);
+            free(nodes);
+            for (size_t j = 0; j < hosts_count; j++) free(output_files[j]);
+            free(output_files);
+            return;
+        }
+    }
+    
+    // Wait for all nodes to finish
+    for (size_t i = 0; i < hosts_count; i++) {
+        pthread_join(threads[i], NULL);
+        if (thread_data[i].result != 0) {
+            sprintf(res, "fail - node %zu returned error %d", i + 1, thread_data[i].result);
+            free(threads);
+            free(thread_data);
+            free(nodes);
+            for (size_t j = 0; j < hosts_count; j++) free(output_files[j]);
+            free(output_files);
+            return;
+        }
+    }
+    
+    free(threads);
+    free(thread_data);
+    free(nodes);
+    
+    printf("All node loops finished! Now checking results...\n");
+    
+    // Read all output files
+    typedef struct {
+        size_t sender_id;
+        size_t msg_id;
+        int is_broadcast; // 1 for 'b', 0 for 'd'
+    } log_entry_t;
+    
+    log_entry_t*** all_logs = malloc(hosts_count * sizeof(log_entry_t**));
+    size_t** log_counts = malloc(hosts_count * sizeof(size_t*));
+    size_t* total_counts = calloc(hosts_count, sizeof(size_t));
+    
+    // Read each process's output
+    for (size_t proc = 0; proc < hosts_count; proc++) {
+        FILE* f = fopen(output_files[proc], "r");
+        if (!f) {
+            sprintf(res, "fail - cannot open output file for process %zu", proc + 1);
+            goto cleanup;
+        }
+        
+        // Count lines first
+        size_t line_count = 0;
+        char line[256];
+        while (fgets(line, sizeof(line), f)) line_count++;
+        rewind(f);
+        
+        // Allocate for broadcasts and deliveries separately
+        all_logs[proc] = malloc(2 * sizeof(log_entry_t*));
+        log_counts[proc] = calloc(2, sizeof(size_t));
+        all_logs[proc][0] = malloc(line_count * sizeof(log_entry_t)); // broadcasts
+        all_logs[proc][1] = malloc(line_count * sizeof(log_entry_t)); // deliveries
+        
+        // Parse file
+        while (fgets(line, sizeof(line), f)) {
             line[strcspn(line, "\n")] = 0;
             
-            char expected[256];
-            snprintf(expected, sizeof(expected), "b %zu", i);
-            if (strcmp(line, expected) != 0) {
-                strcpy(res, "fail - sender wrong format");
-                fclose(node_file);
-                return;
+            char type;
+            size_t id1, id2;
+            if (sscanf(line, "%c %zu %zu", &type, &id1, &id2) == 3 && type == 'd') {
+                // Delivery: d sender_id msg_id
+                log_entry_t* entry = &all_logs[proc][1][log_counts[proc][1]++];
+                entry->sender_id = id1;
+                entry->msg_id = id2;
+                entry->is_broadcast = 0;
+                total_counts[proc]++;
+            } else if (sscanf(line, "%c %zu", &type, &id1) == 2 && type == 'b') {
+                // Broadcast: b msg_id
+                log_entry_t* entry = &all_logs[proc][0][log_counts[proc][0]++];
+                entry->sender_id = proc + 1;
+                entry->msg_id = id1;
+                entry->is_broadcast = 1;
+                total_counts[proc]++;
+            }
+        }
+        fclose(f);
+    }
+    
+    // Verify 1: Each process broadcasts exactly NUM_MESSAGES
+    for (size_t proc = 0; proc < hosts_count; proc++) {
+        if (log_counts[proc][0] != NUM_MESSAGES) {
+            sprintf(res, "fail - process %zu broadcast %zu messages, expected %zu",
+                    proc + 1, log_counts[proc][0], NUM_MESSAGES);
+            goto cleanup;
+        }
+        
+        // Verify broadcasts are in order 1, 2, 3, ..., NUM_MESSAGES
+        for (size_t i = 0; i < NUM_MESSAGES; i++) {
+            if (all_logs[proc][0][i].msg_id != i + 1) {
+                sprintf(res, "fail - process %zu broadcast wrong order at position %zu", proc + 1, i);
+                goto cleanup;
             }
         }
     }
-    else{
-        for (size_t i = 1; i <= NUM_MESSAGES; i++) {
-            if (!fgets(line, sizeof(line), node_file)) {
-                strcpy(res, "fail - reciever missing lines");
-                fclose(node_file);
-                return;
-            }
-            line[strcspn(line, "\n")] = 0;
+    
+    // Verify 2: FIFO ordering - deliveries from same sender are in order
+    for (size_t proc = 0; proc < hosts_count; proc++) {
+        // Track last delivered message ID per sender
+        size_t* last_delivered = calloc(hosts_count, sizeof(size_t));
+        
+        for (size_t i = 0; i < log_counts[proc][1]; i++) {
+            size_t sender = all_logs[proc][1][i].sender_id;
+            size_t msg_id = all_logs[proc][1][i].msg_id;
             
-            char expected[256];
-            snprintf(expected, sizeof(expected), "d 1 %zu", i);
-            if (strcmp(line, expected) != 0) {
-                strcpy(res, "fail - reciever wrong format");
-                fclose(node_file);
-                return;
+            if (sender < 1 || sender > hosts_count) {
+                sprintf(res, "fail - process %zu delivered from invalid sender %zu", proc + 1, sender);
+                free(last_delivered);
+                goto cleanup;
+            }
+            
+            size_t sender_idx = sender - 1;
+            if (msg_id != last_delivered[sender_idx] + 1) {
+                sprintf(res, "fail - process %zu: FIFO violation for sender %zu (got %zu, expected %zu)",
+                        proc + 1, sender, msg_id, last_delivered[sender_idx] + 1);
+                free(last_delivered);
+                goto cleanup;
+            }
+            last_delivered[sender_idx] = msg_id;
+        }
+        free(last_delivered);
+    }
+    
+    // Verify 3: No duplicates
+    for (size_t proc = 0; proc < hosts_count; proc++) {
+        for (size_t i = 0; i < log_counts[proc][1]; i++) {
+            for (size_t j = i + 1; j < log_counts[proc][1]; j++) {
+                if (all_logs[proc][1][i].sender_id == all_logs[proc][1][j].sender_id &&
+                    all_logs[proc][1][i].msg_id == all_logs[proc][1][j].msg_id) {
+                    sprintf(res, "fail - process %zu has duplicate delivery of %zu:%zu",
+                            proc + 1, all_logs[proc][1][i].sender_id, all_logs[proc][1][i].msg_id);
+                    goto cleanup;
+                }
             }
         }
     }
-
-    // Cleanup
-    fclose(node_file);
-    remove(node_log);
-
+    
+    // Verify 4: Agreement - if one process delivers a message, all must deliver it
+    // Build delivery sets: delivered[proc][sender] = set of msg_ids
+    bst_set*** delivered_sets = malloc(hosts_count * sizeof(bst_set**));
+    for (size_t proc = 0; proc < hosts_count; proc++) {
+        delivered_sets[proc] = malloc(hosts_count * sizeof(bst_set*));
+        for (size_t sender = 0; sender < hosts_count; sender++) {
+            delivered_sets[proc][sender] = bst_set_init();
+        }
+        
+        // Populate
+        for (size_t i = 0; i < log_counts[proc][1]; i++) {
+            size_t sender_idx = all_logs[proc][1][i].sender_id - 1;
+            size_t msg_id = all_logs[proc][1][i].msg_id;
+            bst_set_add(delivered_sets[proc][sender_idx], msg_id, NULL, 0);
+        }
+    }
+    
+    // Check agreement
+    for (size_t sender = 0; sender < hosts_count; sender++) {
+        // Find the maximum delivered message ID from this sender across all processes
+        size_t max_delivered = 0;
+        for (size_t proc = 0; proc < hosts_count; proc++) {
+            if (delivered_sets[proc][sender]->size > max_delivered) {
+                max_delivered = delivered_sets[proc][sender]->size;
+            }
+        }
+        
+        // Every process must have delivered the same number of messages from this sender
+        for (size_t proc = 0; proc < hosts_count; proc++) {
+            if (delivered_sets[proc][sender]->size != max_delivered) {
+                sprintf(res, "fail - agreement violated: process %zu delivered %zu messages from sender %zu, but at least one process delivered %zu",
+                        proc + 1, delivered_sets[proc][sender]->size, sender + 1, max_delivered);
+                goto cleanup_sets;
+            }
+            
+            // Verify each process has the same messages (1 through max_delivered)
+            for (size_t msg_id = 1; msg_id <= max_delivered; msg_id++) {
+                void* tmp = NULL;
+                size_t tmp_size = 0;
+                if (bst_set_lookup(delivered_sets[proc][sender], msg_id, &tmp, &tmp_size) != 1) {
+                    sprintf(res, "fail - agreement violated: process %zu missing message %zu from sender %zu",
+                            proc + 1, msg_id, sender + 1);
+                    goto cleanup_sets;
+                }
+            }
+        }
+    }
+    
+    // Verify 5: Each process delivers all broadcasts (including its own)
+    for (size_t proc = 0; proc < hosts_count; proc++) {
+        for (size_t sender = 0; sender < hosts_count; sender++) {
+            if (delivered_sets[proc][sender]->size != NUM_MESSAGES) {
+                sprintf(res, "fail - process %zu delivered %zu messages from sender %zu, expected %zu",
+                        proc + 1, delivered_sets[proc][sender]->size, sender + 1, NUM_MESSAGES);
+                goto cleanup_sets;
+            }
+        }
+    }
+    
     strcpy(res, "pass");
+
+cleanup_sets:
+    for (size_t proc = 0; proc < hosts_count; proc++) {
+        for (size_t sender = 0; sender < hosts_count; sender++) {
+            bst_set_destroy(delivered_sets[proc][sender]);
+        }
+        free(delivered_sets[proc]);
+    }
+    free(delivered_sets);
+
+cleanup:
+    for (size_t proc = 0; proc < hosts_count; proc++) {
+        free(all_logs[proc][0]);
+        free(all_logs[proc][1]);
+        free(all_logs[proc]);
+        free(log_counts[proc]);
+        free(output_files[proc]);
+    }
+    free(all_logs);
+    free(log_counts);
+    free(total_counts);
+    free(output_files);
 }
 
 typedef struct {

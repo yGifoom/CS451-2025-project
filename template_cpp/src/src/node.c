@@ -65,7 +65,7 @@ int node_loop(Node *node) {
     char* res;
     int lenMessage;
     time_t last_flush = time(NULL);
-    // reciever expects n-1 senders
+    // reciever expects n senders
     size_t expectedMsgs = node->socket->pflx_layer->phonebook_size * node->nOfMessages;
 
     // interrupt signals
@@ -118,14 +118,13 @@ int node_loop(Node *node) {
                 snprintf(logBuffer, sizeof(logBuffer), "d %s", (char* )buffer);
                 logger_add(node->logger, logBuffer);
                 if (sscanf((char*)buffer, "%zu %zu", &senderId, &msgId) == 2  
-                   && senderId >= node->processId){
+                   && senderId == node->processId){
                     node->nextMessageId++;
-                } else{
-                    expectedMsgs--;
                 }
+                expectedMsgs--;
             }
         }
-        if (pflx_network_status(node->socket->pflx_layer) == 0 || expectedMsgs == 0){
+        if (expectedMsgs == 0 && pflx_network_status(node->socket->pflx_layer) == 0){
             break;
         }
 
@@ -177,8 +176,10 @@ int node_loop(Node *node) {
         logger_flush(node->logger);
     }
     
-    pflx_stop(node->socket->pflx_layer); // might destroy this before it can stop gracefully
-    fifo_stop(node->socket);
+    int fifo_stop_res = fifo_stop(node->socket);
+    if(fifo_stop_res != 0){
+        
+    }
     free(buffer);
     node_destroy(node);
     
