@@ -4,11 +4,13 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 typedef struct {
-    atomic_uint_fast64_t* bits;  // Array of atomic 64-bit integers
-    size_t length;                // Total number of bits
-    size_t num_blocks;            // Number of 64-bit blocks
+    size_t* bits;           // Array of atomic 64-bit integers
+    size_t length;          // Total number of bits
+    size_t num_blocks;      // Number of 64-bit blocks
+    atomic_int lock;        // lock for access to struct
 } ba;
 
 // Initialize a bit array with given length
@@ -40,12 +42,13 @@ size_t ba_where_0(ba* ba, size_t** indexes_0s, size_t* count_0s);
 // unsafe copy bit array to a buffer
 void* ba_unsafe_copy(ba* ba);
 
-
 // construct a bit array starting from a 
 // buffer of 1s & 0s
 ba* ba_construct(void* bits, size_t bitsLen);
 
 void ba_merge(ba* dest, ba* add);
+
+bool ba_subset(ba* superset, ba* subset);
 
 #endif
 
