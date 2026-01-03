@@ -3,6 +3,7 @@
 
 // external headers
 #include<stdatomic.h>
+#include<stdbool.h>
 
 // internal
 #include"pflx.h"
@@ -19,35 +20,48 @@ typedef struct{
     queue_t* downQueue;
     int network_busy;
 
+    int proposals_len;
+    int ds;
+    struct dictionary* proposal_to_index_translation;
     int* index_to_proposal_int_translation; // dual is used only in bootstrap 
-    la_proposal* proposals;
-    ba* accepted_values;
-    int ds;    
 
-    size_t next_id_tbd;
-    bst_set* id_tbd;
+    int ds;
+    int vs;
+    char* config_path;    
+
+    int round; 
+    la_buffered_entry* buffered_proposals;
 
     atomic_int shouldStop;
 
     pflx* pflx_layer;
-    pflx* beb_layer;
 }la;
 
+typedef struct{
+    la_proposal prop;
+    ba accepted_values;
+}la_buffered_entry;
+
 /*la_frame
-bool ack_or_message     1B
-bool ack_or_nack        1B
+int type_of_msg         4B
 int origin_ID           4B
 int index               4B
 int retransmit          4B
 ba(unrolled) proposal   X * 8B
 
-wh ds <= 64 ; 22B per message
 where X is ceiling(ds/64)
+type_of_msg = 0 -> bootstrap
+            = 1 -> proposal
+            = 2 -> ack
+            = 3 -> nack
+
+wh ds <= 64 ; 24B per message
 */
 typedef struct{
     ba proposed_data;
     unsigned int n_acks;
     unsigned int restransmits;
+    bool active;
 }la_proposal;
 
 // handle to be put in downQueue 
@@ -68,10 +82,12 @@ int la_recv(la* la, void* message, size_t* messageSize);
 int la_send_routine(la* la);
 int la_recv_routine(la* la);
 int la_deliver(la* la, la_proposal* msg);
-la* la_init(pflx* pflx, size_t pid);
+la* la_init(pflx* pflx_layer, char* config_path, size_t pid);
 int la_destroy(la*);
 
-int beb_with_pflx(pflx*, void*);
+int proposal_load_next(la*, int);
+
+int beb_with_pflx(pflx*, int, void*, size_t);
 int la_bootstrap_from_config(la*, char*);
 
 la_proposal* la_proposal_copy(la_proposal*);
