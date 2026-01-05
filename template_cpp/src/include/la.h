@@ -12,51 +12,6 @@
 #include"ba.h"
 #include"dict.h"
 
-
-typedef struct{
-    size_t pid;
-
-    queue_t* upQueue;
-    queue_t* downQueue;
-    int network_busy;
-
-    int proposals_len;
-    int ds;
-    struct dictionary* proposal_to_index_translation;
-    int* index_to_proposal_int_translation; // dual is used only in bootstrap 
-
-    int ds;
-    int vs;
-    char* config_path;    
-
-    int round; 
-    la_buffered_entry* buffered_proposals;
-
-    atomic_int shouldStop;
-
-    pflx* pflx_layer;
-}la;
-
-typedef struct{
-    la_proposal prop;
-    ba accepted_values;
-}la_buffered_entry;
-
-/*la_frame
-int type_of_msg         4B
-int origin_ID           4B
-int index               4B
-int retransmit          4B
-ba(unrolled) proposal   X * 8B
-
-where X is ceiling(ds/64)
-type_of_msg = 0 -> bootstrap
-            = 1 -> proposal
-            = 2 -> ack
-            = 3 -> nack
-
-wh ds <= 64 ; 24B per message
-*/
 typedef struct{
     ba proposed_data;
     unsigned int n_acks;
@@ -73,6 +28,50 @@ typedef struct{
 
 // handle to be put in downQueue 
 typedef int proposal_handle;
+
+typedef struct{
+    la_proposal prop;
+    ba accepted_values;
+}la_buffered_entry;
+
+typedef struct{
+    size_t pid;
+
+    queue_t* upQueue;
+    queue_t* downQueue;
+    int network_busy;
+
+    int proposals_len;
+    struct dictionary* proposal_to_index_translation;
+    int* index_to_proposal_int_translation; // dual is used only in bootstrap 
+
+    int ds;
+    int vs;
+    char* config_path;    
+
+    int round; 
+    la_buffered_entry* buffered_proposals;
+
+    atomic_int shouldStop;
+
+    pflx* pflx_layer;
+}la;
+
+/*la_frame
+int type_of_msg         4B
+int origin_ID           4B
+int index               4B
+int retransmit          4B
+ba(unrolled) proposal   X * 8B
+
+where X is ceiling(ds/64)
+type_of_msg = 0 -> bootstrap
+            = 1 -> proposal
+            = 2 -> ack
+            = 3 -> nack
+
+wh ds <= 64 ; 24B per message
+*/
 
 
 int la_start(la* la);

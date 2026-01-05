@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 199309L
 // external
 #include<stdio.h>
 #include<stdlib.h>
@@ -5,11 +6,13 @@
 #include<pthread.h>
 #include<unistd.h>
 #include<time.h>
+#include<stdint.h>
 
 // internal 
 #include"parser.h"
 #include"la.h"
 #include"pflx.h"
+#include"tests.h"
 
 typedef struct {
     la* la_instance;
@@ -35,7 +38,8 @@ static void* bootstrap_thread_func(void* arg) {
     args->started = 1;
     
     // Add random delay to simulate asynchronous starts
-    usleep((rand() % 1000) * 1000); // 0-1 second delay
+    struct timespec ts = {0, (long)((rand() % 1000) * 1000000L)}; // 0-1 second delay
+    nanosleep(&ts, NULL);
     
     printf("Process %d: Running bootstrap\n", args->pid);
     fflush(stdout);
@@ -48,7 +52,7 @@ static void* bootstrap_thread_func(void* arg) {
     return NULL;
 }
 
-static int verify_bootstrap_results(la** instances, int num_processes) {
+static int verify_bootstrap_results(la** instances, size_t num_processes) {
     printf("\n=== Verifying Bootstrap Results ===\n");
     fflush(stdout);
     
@@ -57,20 +61,20 @@ static int verify_bootstrap_results(la** instances, int num_processes) {
     int proposals_len = instances[0]->proposals_len;
     int vs = instances[0]->vs;
     
-    for (int i = 1; i < num_processes; i++) {
+    for (size_t i = 1; i < num_processes; i++) {
         if (instances[i]->ds != ds) {
-            printf("ERROR: Process %d has ds=%d, expected %d\n", i+1, instances[i]->ds, ds);
+            printf("ERROR: Process %zu has ds=%d, expected %d\n", i+1, instances[i]->ds, ds);
             fflush(stdout);
             return -1;
         }
         if (instances[i]->proposals_len != proposals_len) {
-            printf("ERROR: Process %d has proposals_len=%d, expected %d\n", 
+            printf("ERROR: Process %zu has proposals_len=%d, expected %d\n", 
                    i+1, instances[i]->proposals_len, proposals_len);
             fflush(stdout);
             return -1;
         }
         if (instances[i]->vs != vs) {
-            printf("ERROR: Process %d has vs=%d, expected %d\n", i+1, instances[i]->vs, vs);
+            printf("ERROR: Process %zu has vs=%d, expected %d\n", i+1, instances[i]->vs, vs);
             fflush(stdout);
             return -1;
         }
@@ -80,10 +84,10 @@ static int verify_bootstrap_results(la** instances, int num_processes) {
     fflush(stdout);
     
     // Verify all processes have the same translation array
-    for (int i = 1; i < num_processes; i++) {
+    for (size_t i = 1; i < num_processes; i++) {
         if (!instances[i]->index_to_proposal_int_translation || 
             !instances[0]->index_to_proposal_int_translation) {
-            printf("ERROR: Process %d has NULL translation array\n", i+1);
+            printf("ERROR: Process %zu has NULL translation array\n", i+1);
             fflush(stdout);
             return -1;
         }
@@ -91,7 +95,7 @@ static int verify_bootstrap_results(la** instances, int num_processes) {
         for (int j = 0; j < ds; j++) {
             if (instances[i]->index_to_proposal_int_translation[j] != 
                 instances[0]->index_to_proposal_int_translation[j]) {
-                printf("ERROR: Process %d translation[%d]=%d, expected %d\n", 
+                printf("ERROR: Process %zu translation[%d]=%d, expected %d\n", 
                        i+1, j, instances[i]->index_to_proposal_int_translation[j],
                        instances[0]->index_to_proposal_int_translation[j]);
                 fflush(stdout);
@@ -112,20 +116,20 @@ static int verify_bootstrap_results(la** instances, int num_processes) {
     
     // Verify dictionary consistency
     printf("\n✓ Verifying dictionary consistency...\n");
-    for (int proc = 0; proc < num_processes; proc++) {
+    for (size_t proc = 0; proc < num_processes; proc++) {
         for (int i = 0; i < ds; i++) {
             char key[32];
             snprintf(key, sizeof(key), "%d", instances[proc]->index_to_proposal_int_translation[i]);
             
-            if (!dic_find(instances[proc]->proposal_to_index_translation, key, strlen(key))) {
-                printf("ERROR: Process %d cannot find key '%s' in dictionary\n", proc+1, key);
+            if (!dic_find(instances[proc]->proposal_to_index_translation, key, (int)strlen(key))) {
+                printf("ERROR: Process %zu cannot find key '%s' in dictionary\n", proc+1, key);
                 fflush(stdout);
                 return -1;
             }
             
             int index = *instances[proc]->proposal_to_index_translation->value;
             if (index != i) {
-                printf("ERROR: Process %d key '%s' maps to index %d, expected %d\n", 
+                printf("ERROR: Process %zu key '%s' maps to index %d, expected %d\n", 
                        proc+1, key, index, i);
                 fflush(stdout);
                 return -1;
@@ -143,13 +147,13 @@ void testBootstrapLa(char* config_path, Parser* parser){
     printf("\n=== Starting LA Bootstrap Test ===\n");
     fflush(stdout);
     
-    srand(time(NULL));
+    srand((unsigned int)time(NULL));
     
     size_t num_hosts;
     const Host* hosts = parser_get_hosts(parser, &num_hosts);
-    int my_id = parser_get_id(parser);
+    uint32_t my_id = parser_get_id(parser);
     
-    printf("Test configuration: %zu processes, my_id=%d\n", num_hosts, my_id);
+    printf("Test configuration: %zu processes, my_id=%u\n", num_hosts, my_id);
     printf("Config file: %s\n", config_path);
     fflush(stdout);
     
@@ -160,12 +164,11 @@ void testBootstrapLa(char* config_path, Parser* parser){
     
     // Initialize LA instances
     for (size_t i = 0; i < num_hosts; i++) {
-        unsigned short base_port = 5000 + (i * 2);
+        unsigned short base_port = (unsigned short)(5000 + (i * 2));
         
         pflx* pflx_layer = pflx_init(base_port, hosts, num_hosts);
-        pflx* beb_layer = pflx_init(base_port + 1, hosts, num_hosts);
         
-        if (!pflx_layer || !beb_layer) {
+        if (!pflx_layer) {
             printf("ERROR: Failed to initialize pflx layers for process %zu\n", i+1);
             fflush(stdout);
             // Cleanup and exit
@@ -178,7 +181,7 @@ void testBootstrapLa(char* config_path, Parser* parser){
             return;
         }
         
-        instances[i] = la_init(pflx_layer, beb_layer, config_path, i + 1);
+        instances[i] = la_init(pflx_layer, config_path, i + 1);
         if (!instances[i]) {
             printf("ERROR: Failed to initialize LA for process %zu\n", i+1);
             fflush(stdout);
@@ -186,7 +189,7 @@ void testBootstrapLa(char* config_path, Parser* parser){
         }
         
         thread_args[i].la_instance = instances[i];
-        thread_args[i].pid = i + 1;
+        thread_args[i].pid = (int)(i + 1);
         thread_args[i].config_path = config_path;
         thread_args[i].bootstrap_result = -99;
         thread_args[i].started = 0;

@@ -1,7 +1,13 @@
-#include "utils.h"
+// external
 #include <stdlib.h>
 #include <string.h>
-#include <dict.h>
+#include <stdio.h>
+
+// internal
+#include "utils.h"
+#include "dict.h"
+#include "la.h"
+
 
 char* my_strdup(const char* s) {
     if (!s) return NULL;
@@ -23,7 +29,7 @@ void _bootstrap_merge_incoming_proposals(int* own_frame, int* incoming_frame,
             int prop = incoming_frame[i+2];
             sprintf( s, "%d", prop);
 
-            if(!dic_add(own_unique_proposals, s, strlen(s))){
+            if(!dic_add(own_unique_proposals, s, (int)strlen(s))){
                 own_frame[own_unique_prop_n + 2] = prop;
                 own_unique_prop_n++;
             }
@@ -41,8 +47,4 @@ static int compare_ints(const void* a, const void* b) {
     if (arg1 < arg2) return -1;
     if (arg1 > arg2) return 1;
     return 0;
-}
-
-void proposal_init(){
-    
 }

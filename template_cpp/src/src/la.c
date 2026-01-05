@@ -187,11 +187,11 @@ int la_destroy(la* la_layer){
     // Destroy buffered proposals
     if (la_layer->buffered_proposals) {
         for (int i = 0; i < BUFFERED_PROPOSALS; i++) {
-            if (la_layer->buffered_proposals[i].prop.proposed_data) {
-                ba_destroy(la_layer->buffered_proposals[i].prop.proposed_data);
+            if (&la_layer->buffered_proposals[i].prop.proposed_data) {
+                ba_destroy(&la_layer->buffered_proposals[i].prop.proposed_data);
             }
-            if (la_layer->buffered_proposals[i].accepted_values) {
-                ba_destroy(la_layer->buffered_proposals[i].accepted_values);
+            if (&la_layer->buffered_proposals[i].accepted_values) {
+                ba_destroy(&la_layer->buffered_proposals[i].accepted_values);
             }
         }
         free(la_layer->buffered_proposals);
@@ -276,8 +276,8 @@ int proposal_load_next(la* la_layer, int buffer_size){
         }
         
         // Initialize the proposal's ba structure
-        la_layer->buffered_proposals[i].prop.proposed_data = ba_init(la_layer->ds);
-        if (!la_layer->buffered_proposals[i].prop.proposed_data) {
+        la_layer->buffered_proposals[i].prop.proposed_data = *ba_init(la_layer->ds);
+        if (&la_layer->buffered_proposals[i].prop.proposed_data == NULL) {
             fclose(fp);
             return -1;
         }
@@ -288,9 +288,9 @@ int proposal_load_next(la* la_layer, int buffer_size){
         la_layer->buffered_proposals[i].prop.active = true;
         
         // Initialize accepted_values
-        la_layer->buffered_proposals[i].accepted_values = ba_init(la_layer->ds);
-        if (!la_layer->buffered_proposals[i].accepted_values) {
-            ba_destroy(la_layer->buffered_proposals[i].prop.proposed_data);
+        la_layer->buffered_proposals[i].accepted_values = *ba_init(la_layer->ds);
+        if (&la_layer->buffered_proposals[i].accepted_values) {
+            ba_destroy(&la_layer->buffered_proposals[i].prop.proposed_data);
             fclose(fp);
             return -1;
         }
