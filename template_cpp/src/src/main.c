@@ -52,11 +52,6 @@ void tests(char* res, Parser* parser){
     printf("Test testBa: %s\n", ba_res);
     free(ba_res);*/
 
-    char* la_bootstrap_res = malloc(sizeof(char) * 50);
-    testBootstrapLa(la_bootstrap_res, parser);
-    printf("Test la_bootstrap: %s\n", la_bootstrap_res);
-    free(la_bootstrap_res);
-
     return;
 }
 

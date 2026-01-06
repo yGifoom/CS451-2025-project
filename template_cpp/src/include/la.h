@@ -4,6 +4,7 @@
 // external headers
 #include<stdatomic.h>
 #include<stdbool.h>
+#include<pthread.h>
 
 // internal
 #include"pflx.h"
@@ -12,26 +13,43 @@
 #include"ba.h"
 #include"dict.h"
 
+#define LA_UNIQUE_VALUES 1000
+
+/*la_frame
+int type_of_msg         4B
+int origin_ID           4B
+int index               4B
+int retransmit          4B
+int size_proposal       4B
+int* proposal           size_proposal * 4B
+
+type_of_msg = 1 -> proposal
+            = 2 -> ack
+            = 3 -> nack
+*/
+
 typedef struct{
-    ba proposed_data;
     unsigned int n_acks;
-    unsigned int restransmits;
     bool active;
+    unsigned int restransmits;
+    int proposal_len;
+    int proposed_data[LA_UNIQUE_VALUES];
 }la_proposal;
 
 // handle to be put in downQueue 
 typedef struct{
+    int type_of_msg;  
     int dest;
     int index;
     int retransmit;
-}la_ack_handle;
-
-// handle to be put in downQueue 
-typedef int proposal_handle;
+}la_handle;
 
 typedef struct{
     la_proposal prop;
-    ba accepted_values;
+    pthread_mutex_t prop_lock;
+    int accepted_len;
+    int accepted_values[LA_UNIQUE_VALUES];
+
 }la_buffered_entry;
 
 typedef struct{
@@ -42,8 +60,6 @@ typedef struct{
     int network_busy;
 
     int proposals_len;
-    struct dictionary* proposal_to_index_translation;
-    int* index_to_proposal_int_translation; // dual is used only in bootstrap 
 
     int ds;
     int vs;
@@ -57,26 +73,9 @@ typedef struct{
     pflx* pflx_layer;
 }la;
 
-/*la_frame
-int type_of_msg         4B
-int origin_ID           4B
-int index               4B
-int retransmit          4B
-ba(unrolled) proposal   X * 8B
-
-where X is ceiling(ds/64)
-type_of_msg = 0 -> bootstrap
-            = 1 -> proposal
-            = 2 -> ack
-            = 3 -> nack
-
-wh ds <= 64 ; 24B per message
-*/
-
-
 int la_start(la* la);
 int la_stop(la* la);
-int la_send(la* la, void* handle, size_t originID);
+int la_send(la* la, void* handle);
 int la_recv(la* la, void* message, size_t* messageSize);
 int la_send_routine(la* la);
 int la_recv_routine(la* la);
@@ -89,10 +88,9 @@ int proposal_load_next(la*, int);
 int beb_with_pflx(pflx*, int, void*, size_t);
 int la_bootstrap_from_config(la*, char*);
 
-la_proposal* la_proposal_copy(la_proposal*);
-void* la_to_frame(la_proposal);
-la_proposal* frame_to_la(void*);
-la_proposal* la_proposal_init(ba*, void*);
-int la_proposal_destroy(la_proposal* la_prop);
+int la_to_frame(la_proposal prop, int pid, int index, int** frame, int* frame_len);
+int* frame_to_proposal_array(int* frame, int* len_of_proposal);
+la_proposal* la_proposal_init();
+void la_proposal_destroy(la_proposal* la_prop);
 
 #endif

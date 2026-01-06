@@ -4,7 +4,6 @@
 include_directories(include include_tests)
 set(SOURCES 
     src/bst_test.c
-    src/test_bootstrap_la.c
     src/pflx.c
     src/fifo.c
     src/threads_entry.c
