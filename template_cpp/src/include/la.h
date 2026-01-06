@@ -15,17 +15,15 @@
 
 #define LA_UNIQUE_VALUES 1000
 
+#define LA_FRAME_HEADER_SIZE 6
 /*la_frame
 int type_of_msg         4B
 int origin_ID           4B
+int target_ID           4B
 int index               4B
 int retransmit          4B
 int size_proposal       4B
 int* proposal           size_proposal * 4B
-
-type_of_msg = 1 -> proposal
-            = 2 -> ack
-            = 3 -> nack
 */
 
 typedef struct{
@@ -36,7 +34,11 @@ typedef struct{
     int proposed_data[LA_UNIQUE_VALUES];
 }la_proposal;
 
-// handle to be put in downQueue 
+/* handle to be put in downQueue 
+type_of_msg = 1 -> proposal
+            = 2 -> ack
+            = 3 -> nack
+*/
 typedef struct{
     int type_of_msg;  
     int dest;
@@ -60,11 +62,12 @@ typedef struct{
     int network_busy;
 
     int proposals_len;
-
     int ds;
     int vs;
+
     char* config_path;    
 
+    atomic_int next_tbd;
     int round; 
     la_buffered_entry* buffered_proposals;
 
@@ -88,7 +91,7 @@ int proposal_load_next(la*, int);
 int beb_with_pflx(pflx*, int, void*, size_t);
 int la_bootstrap_from_config(la*, char*);
 
-int la_to_frame(la_proposal prop, int pid, int index, int** frame, int* frame_len);
+int la_msg_to_frame(la* la, la_handle* handle, int** frame);
 int* frame_to_proposal_array(int* frame, int* len_of_proposal);
 la_proposal* la_proposal_init();
 void la_proposal_destroy(la_proposal* la_prop);

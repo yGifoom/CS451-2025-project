@@ -129,15 +129,136 @@ int la_recv(la* la, int* buffer_set, size_t* size_set){
 }
 
 int la_send_routine(la* la){
-    return 1;
+
+
+    // vars for loop
+    int buffer_idx = 0;
+
+    while(1){
+        
+        if (atomic_load_explicit(&la->shouldStop, memory_order_acquire) == 1){
+            printf("%zu-LA SEND ROUTINE: stop requested, exiting\n", la->pid); fflush(stdout);
+            break;
+        }
+
+        if(pflx_network_status(la->pflx_layer) == 0){
+            printf("%zu-LA SEND ROUTINE: pflx network not busy\n", la->pid); fflush(stdout);
+            la->network_busy = 0;
+        }
+
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = CONGESTION_CONTROL }; // 10ms = 10000000
+        nanosleep(&ts, NULL);
+
+        void* popped = NULL; size_t msgSize;
+        int res = queue_pop_timed(la->downQueue, &popped, &msgSize, TIMEOUT_QUEUE_POP);
+        if (res != 0){
+            if (res == ETIMEDOUT){
+                continue;
+            }
+            printf("%zu-LA SEND ROUTINE: queue_pop_timed failed with error %d\n", la->pid, res); fflush(stdout);
+            return res;
+        }
+        // Check for shutdown sentinel
+        if (popped == LA_SHUTDOWN_SENTINEL) {
+            printf("%zu-LA SEND ROUTINE: shutdown sentinel received, exiting\n", la->pid); fflush(stdout);
+            break;
+        }
+
+        // NOW MANAGING MESSAGE 
+
+        la_handle* msg_handle = (la_handle*)popped;
+
+
+        // is index in buffer?
+        buffer_idx = translate_index_buffer(la, msg_handle->index, BUFFERED_PROPOSALS);
+        if (buffer_idx == -1){
+            free(msg_handle);
+            continue;
+        }
+
+        // is retransmit correct?
+        pthread_mutex_lock(&la->buffered_proposals[buffer_idx].prop_lock);
+        if (la->buffered_proposals[buffer_idx].prop.restransmits != msg_handle->retransmit){
+            pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
+            free(msg_handle);
+            continue;
+        } 
+
+        // broadcasting a new proposal
+        if(msg_handle->type_of_msg == 1){
+            // has it been delivered already?
+            if (atomic_load(&la->next_tbd) > msg_handle->index){
+                pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
+                free(msg_handle);
+                continue;
+            }
+
+            // make frame
+            int proposal_size = la->buffered_proposals[buffer_idx].prop.proposal_len;
+            int frame_size = sizeof(int) * (LA_FRAME_HEADER_SIZE + proposal_size);
+            int* frame = malloc(frame_size);
+            if(frame == NULL){
+                pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
+                queue_push(la->downQueue, msg_handle, sizeof(la_handle*));
+                continue;
+            }
+            
+            int res_p2f = la_msg_to_frame(la, msg_handle, &frame);
+            // prop has been copied and can be unlocked 
+            pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
+
+            if(res_p2f != 0){
+                queue_push(la->downQueue, msg_handle, sizeof(la_handle*));
+                free(frame);
+                continue;
+            }
+
+            // broadcast frame
+            int res_beb = beb_with_pflx(la->pflx_layer, la->pid, frame, frame_size);
+
+            if(res_beb != 0){
+                // beb has to be retried
+                queue_push(la->downQueue, msg_handle, sizeof(la_handle*));
+                continue;
+            }
+        }else if(msg_handle->type_of_msg == 2){
+            int frame_ack_size = sizeof(int) * LA_FRAME_HEADER_SIZE;
+            int* frame_ack = malloc()
+            //TODO FINISH THIS
+        }else if(msg_handle->type_of_msg == 3){
+
+        }else{
+            printf("%zu-LA SEND ROUTINE: got bad type_of_msg: %d\n", la->pid, msg_handle->type_of_msg); fflush(stdout);
+        }
+    }
 }
 
 int la_recv_routine(la* la){
     return 1;
 }
 
-int la_deliver(la* la, la_proposal* msg){
-    return 1;
+int la_deliver(la* la, int index){
+    int buffer_index = translate_intdex_buffer(la, index, BUFFERED_PROPOSALS);
+
+    if (buffer_index == -1){
+        return 1;
+    }
+    pthread_mutex_lock(&la->buffered_proposals[buffer_index].prop_lock);
+
+    int size_delivered_set = la->buffered_proposals[buffer_index].prop.proposal_len;
+    int* delivered_set = malloc(sizeof(int) * size_delivered_set);
+    
+    if(delivered_set == NULL){
+        pthread_mutex_unlock(&la->buffered_proposals[buffer_index].prop_lock);
+        return 1;
+    }
+    memcpy(delivered_set, la->buffered_proposals[buffer_index].prop.proposed_data, size_delivered_set);
+
+    queue_push(la->upQueue, delivered_set, size_delivered_set);
+    pthread_mutex_unlock(&la->buffered_proposals[buffer_index].prop_lock);
+
+    return 0;
+    
 }
 
 la* la_init(pflx* pflx_layer, char* config_path, size_t pid){
@@ -176,6 +297,7 @@ la* la_init(pflx* pflx_layer, char* config_path, size_t pid){
         free(la_layer);
         return NULL;
     }
+    la_layer->next_tbd = 1;
 
     la_layer->pflx_layer = pflx_layer;
 
@@ -314,19 +436,46 @@ type_of_msg = 0 -> bootstrap
             = 2 -> ack
             = 3 -> nack
 */
-int la_to_frame(la_proposal prop, int pid, int index, int** frame, int* frame_len){
-    int size_proposal = prop.proposal_len * sizeof(int);
-    frame[5] = malloc(size_proposal);
-    if (frame[5] == NULL){
+int la_msg_to_frame(la* la, la_handle* handle, int** frame){
+    if(!frame || !*frame){
         return 1;
     }
-    memcpy(frame[5], prop.proposed_data, size_proposal);
+
+    int size_set = 0;
+    // is frame for ack
+    if(handle->type_of_msg == 2){
+
+    }else {
+        // load the current proposal
+        int buffer_idx = translate_index_buffer(la, handle->index, BUFFERED_PROPOSALS);
+
+        if(handle->type_of_msg == 1){
+            la_proposal prop = la->buffered_proposals[buffer_idx].prop;
+            size_set = prop.proposal_len * sizeof(int);
+            frame[6] = malloc(size_set);
+            if (frame[6] == NULL){
+                return 1;
+            }
+            memcpy(frame[6], prop.proposed_data, size_set);
+        }else if(handle->type_of_msg == 3){
+            int* accepted_vals = la->buffered_proposals[buffer_idx].accepted_values;
+            size_set = la->buffered_proposals[buffer_idx].accepted_len * sizeof(int);
+            frame[6] = malloc(size_set);
+            if (frame[6] == NULL){
+                return 1;
+            }
+            memcpy(frame[6], accepted_vals, size_set);
+        }else{
+            return 1;
+        }
+    }
     
-    frame[0] = 1;
-    frame[1] = pid;
-    frame[2] = index;
-    frame[3] = prop.restransmits;
-    frame[4] = size_proposal;
+    frame[0] = handle->type_of_msg;
+    frame[1] = la->pid;
+    frame[2] = handle->dest;
+    frame[3] = handle->index;
+    frame[4] = handle->retransmit;
+    frame[5] = size_set;
 
     return 0;
 }

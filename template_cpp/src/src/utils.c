@@ -64,3 +64,14 @@ superset:   for(int i = 0; i < size_subset; i++){
 
     return true;
 }
+
+int translate_index_buffer(la* la_layer, int index, int buffersize){
+    int x = index % buffersize;
+    int exp_round = index / buffersize;
+
+    if (la_layer->round != exp_round){
+        return -1;
+    }
+
+    return x;
+}

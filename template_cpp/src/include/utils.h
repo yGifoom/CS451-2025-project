@@ -15,7 +15,7 @@ static int compare_ints(const void* a, const void* b);
 
 void union_arrays(int* dest, int size_dest, int* from, int size_from);
 bool is_subset(int* superset, int size_superset, int* subset, int size_subset);
-
+int translate_index_buffer(la* la_layer, int index, int buffersize);
 
 
 #endif
