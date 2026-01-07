@@ -15,34 +15,43 @@
 
 #define LA_UNIQUE_VALUES 1000
 
-#define LA_FRAME_HEADER_SIZE 6
+
 /*la_frame
 int type_of_msg         4B
 int origin_ID           4B
 int target_ID           4B
-int index               4B
+int ID               4B
 int retransmit          4B
 int size_proposal       4B
 int* proposal           size_proposal * 4B
 */
 
+#define LA_FRAME_HEADER_SIZE 6
+#define LA_PROPOSAL_TYPE 1
+#define LA_ACK_TYPE 2
+#define LA_NACK_TYPE 3
+
+#define LA_TYPE_OF_MSG_HID 0
+#define LA_ORIGIN_ID_HID 1
+#define LA_TARGET_ID_HID 2
+#define LA_ID_HID 3
+#define LA_RETRANSMIT_HID 4
+#define LA_SIZE_PROPOSAL_HID 5
+
+
 typedef struct{
     unsigned int n_acks;
+    unsigned int n_nacks;
     bool active;
     unsigned int restransmits;
     int proposal_len;
     int proposed_data[LA_UNIQUE_VALUES];
 }la_proposal;
 
-/* handle to be put in downQueue 
-type_of_msg = 1 -> proposal
-            = 2 -> ack
-            = 3 -> nack
-*/
 typedef struct{
     int type_of_msg;  
     int dest;
-    int index;
+    int ID;
     int retransmit;
 }la_handle;
 
@@ -78,11 +87,11 @@ typedef struct{
 
 int la_start(la* la);
 int la_stop(la* la);
-int la_send(la* la, void* handle);
-int la_recv(la* la, void* message, size_t* messageSize);
+int la_send(la* la, la_handle* handle);
+int la_recv(la* la, int* buffer_set, size_t* size_set);
 int la_send_routine(la* la);
 int la_recv_routine(la* la);
-int la_deliver(la* la, la_proposal* msg);
+int la_deliver(la* la, int ID);
 la* la_init(pflx* pflx_layer, char* config_path, size_t pid);
 int la_destroy(la*);
 
