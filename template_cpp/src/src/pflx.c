@@ -262,10 +262,10 @@ int pflx_recv(pflx* pflx, void* message, size_t* messageSize){
     int res = queue_pop_timed(pflx->upQueue, (void **)&msg, &msgPtrSize, TIMEOUT_QUEUE_POP);
     if(res != 0){
         if (res == ETIMEDOUT){
-            printf("PFLX RECV: timed out\n"); fflush(stdout);
+            printf("%d-PFLX RECV: timed out\n", pflx->udpSocket->sockfd); fflush(stdout);
             return res;
         }
-        printf("PFLX RECV: failed gracefully\n"); fflush(stdout);
+        printf("%d-PFLX RECV: failed gracefully\n", pflx->udpSocket->sockfd); fflush(stdout);
         return res;
     }
 

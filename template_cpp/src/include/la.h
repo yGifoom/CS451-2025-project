@@ -14,7 +14,7 @@
 #include"dict.h"
 
 #define LA_UNIQUE_VALUES 1000
-
+static const int BUFFERSIZE_OUTGOING = 512 * sizeof(int) * 2;
 
 /*la_frame
 int type_of_msg         4B
@@ -40,10 +40,10 @@ int* proposal           size_proposal * 4B
 
 
 typedef struct{
-    unsigned int n_acks;
-    unsigned int n_nacks;
+    int n_acks;
+    int n_nacks;
     bool active;
-    unsigned int restransmits;
+    int restransmits;
     int proposal_len;
     int proposed_data[LA_UNIQUE_VALUES];
 }la_proposal;
@@ -74,10 +74,10 @@ typedef struct{
     int ds;
     int vs;
 
-    char* config_path;    
+    const char* config_path;    
 
     atomic_int next_tbd;
-    int round; 
+    atomic_int round; 
     la_buffered_entry* buffered_proposals;
 
     atomic_int shouldStop;
@@ -92,17 +92,18 @@ int la_recv(la* la, int* buffer_set, size_t* size_set);
 int la_send_routine(la* la);
 int la_recv_routine(la* la);
 int la_deliver(la* la, int ID);
-la* la_init(pflx* pflx_layer, char* config_path, size_t pid);
+la* la_init(pflx* pflx_layer, const char* config_path, size_t pid);
 int la_destroy(la*);
 
 int proposal_load_next(la*, int);
 
-int beb_with_pflx(pflx*, int, void*, size_t);
+int beb_with_pflx(pflx*, size_t, void*, size_t);
 int la_bootstrap_from_config(la*, char*);
 
-int la_msg_to_frame(la* la, la_handle* handle, int** frame);
+int la_msg_to_frame(la* la, la_handle* handle, int frame[BUFFERSIZE_OUTGOING]);
 int* frame_to_proposal_array(int* frame, int* len_of_proposal);
 la_proposal* la_proposal_init();
 void la_proposal_destroy(la_proposal* la_prop);
+la_handle* la_handle_init(int ID, int dest, int retransmit, int type_of_msg);
 
 #endif

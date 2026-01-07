@@ -1,4 +1,13 @@
 #define _POSIX_C_SOURCE      199309L
+
+// external
+#include<stdlib.h>
+#include<pthread.h>
+#include<string.h>
+#include<time.h>
+#include<sys/time.h>
+
+//internal
 #include"logger.h"
 #include"parser.h"
 #include"udp.h"
@@ -10,11 +19,7 @@
 #include"bst_set.h"
 #include"ba.h"
 #include"fifo.h"
-#include<stdlib.h>
-#include<pthread.h>
-#include<string.h>
-#include<time.h>
-#include<sys/time.h>
+#include"la.h"
 
 // Forward declarations for thread functions
 void* popper_thread(void* arg);
@@ -1540,7 +1545,7 @@ cleanup_concurrent:
     return;
 }
 
-void testLA(char* res, Parser* parser) {
+void testLa(char* res, Parser* parser) {
     printf("LA TEST: Starting Lattice Agreement test...\n"); fflush(stdout);
     
     // Get host information from parser
@@ -1552,13 +1557,22 @@ void testLA(char* res, Parser* parser) {
         return;
     }
     
-    const size_t NUM_PROPOSALS = parser_get_num_messages(parser);
+    const size_t NUM_PROPOSALS = parser_get_num_proposals(parser);
+    const size_t VS = parser_get_vs(parser);
+    const size_t DS = parser_get_ds(parser);
+    
     if (NUM_PROPOSALS == 0 || NUM_PROPOSALS > 1000) {
         strcpy(res, "fail - invalid proposal count (1-1000)");
         return;
     }
     
-    printf("LA TEST: Initializing %zu processes with %zu proposals each\n", hosts_count, NUM_PROPOSALS);
+    if (VS == 0 || DS == 0) {
+        strcpy(res, "fail - invalid VS or DS parameters");
+        return;
+    }
+    
+    printf("LA TEST: Initializing %zu processes with %zu proposals each (VS=%zu, DS=%zu)\n", 
+           hosts_count, NUM_PROPOSALS, VS, DS);
     fflush(stdout);
     
     // Initialize pflx and LA instances for all processes
@@ -1589,7 +1603,7 @@ void testLA(char* res, Parser* parser) {
     printf("LA TEST: All pflx instances initialized\n"); fflush(stdout);
     
     // Initialize LA layers
-    char* config_path = parser_get_config_path(parser);
+    const char* config_path = parser_get_config_path(parser);
     for (size_t i = 0; i < hosts_count; i++) {
         la_instances[i] = la_init(pflx_instances[i], config_path, i + 1);
         
@@ -1625,21 +1639,6 @@ void testLA(char* res, Parser* parser) {
     // Start timer for throughput calculation
     struct timeval start_time, end_time;
     gettimeofday(&start_time, NULL);
-    
-    // Each process proposes NUM_PROPOSALS proposals
-    // Proposals are arrays of values: process i proposes [i, i+N, i+2N, ...]
-    for (size_t proc = 0; proc < hosts_count; proc++) {
-        for (size_t prop_id = 1; prop_id <= NUM_PROPOSALS; prop_id++) {
-            // Load next proposal for this process
-            int ID = (int)prop_id;
-            if (proposal_load_next(la_instances[proc], ID) != 0) {
-                sprintf(res, "fail - proposal_load_next for process %zu, ID %d", proc + 1, ID);
-                goto cleanup;
-            }
-        }
-    }
-    
-    printf("LA TEST: All proposals loaded\n"); fflush(stdout);
     
     // Storage for decided values per process
     typedef struct {
@@ -1723,9 +1722,9 @@ void testLA(char* res, Parser* parser) {
             // Check that this decision is valid (subset of union of all proposals for this ID)
             // In practice, we check if values are within reasonable range
             for (size_t i = 0; i < dec->num_values; i++) {
-                if (dec->values[i] < 0 || dec->values[i] >= (int)(hosts_count * LA_UNIQUE_VALUES)) {
-                    sprintf(res, "fail - validity: process %zu decision %d has invalid value %d",
-                            proc + 1, dec->ID, dec->values[i]);
+                if (dec->values[i] < 0 || dec->values[i] >= (int)DS) {
+                    sprintf(res, "fail - validity: process %zu decision %d has invalid value %d (must be < %zu)",
+                            proc + 1, dec->ID, dec->values[i], DS);
                     goto cleanup;
                 }
             }

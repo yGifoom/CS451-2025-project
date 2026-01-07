@@ -12,7 +12,7 @@ void testNodeSeq(char* res, Parser* parser);
 void testBstSet(char* res, Parser* parser);
 void testBa(char* res, Parser* parser);
 void testFifo(char* res, Parser* parser);
-void testLA(char* res, Parser* parser);
+void testLa(char* res, Parser* parser);
 
 
 #endif // TESTS_H

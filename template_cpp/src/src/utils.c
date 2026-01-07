@@ -106,7 +106,7 @@ set1_for:   for(int i = 0; i < set1_len; i++){
 }
 
 bool is_subset(int* superset, int size_superset, int* subset, int size_subset){
-    if(!superset || !subset || !size_superset || !size_subset){
+    if(!superset || !subset || !size_superset){
         return false;
     }
 

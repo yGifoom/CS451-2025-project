@@ -52,6 +52,11 @@ void tests(char* res, Parser* parser){
     printf("Test testBa: %s\n", ba_res);
     free(ba_res);*/
 
+    char* la_res = malloc(sizeof(char) * 50);
+    testLa(la_res, parser);
+    printf("Test testLa: %s\n", la_res);
+    free(la_res);
+
     return;
 }
 

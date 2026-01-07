@@ -112,6 +112,9 @@ Parser* parser_create(int argc, char** argv) {
     parser->config_path = NULL;
     parser->num_messages = 0;
     parser->num_nodes = 0;
+    parser->num_proposals = 0;
+    parser->vs = 0;
+    parser->ds = 0;
     
     return parser;
 }
@@ -157,16 +160,26 @@ int parser_parse(Parser* parser) {
         // Parse config file
         FILE* config = fopen(parser->config_path, "r");
         if (config) {
-            // Try to read two numbers first (Perfect Links format)
-            // If only one number exists (FIFO format), num_nodes will remain 0
-            int items_read = fscanf(config, "%zu %zu", &parser->num_messages, &parser->num_nodes);
-            if (items_read < 1) {
-                fprintf(stderr, "Invalid config file format\n");
-                fclose(config);
-                return -1;
+            // Try to read three numbers first (Lattice Agreement format)
+            int items_read = fscanf(config, "%zu %zu %zu", &parser->num_proposals, &parser->vs, &parser->ds);
+            
+            if (items_read == 3) {
+                // Lattice Agreement format: num_proposals vs ds
+                parser->num_messages = 0;
+                parser->num_nodes = 0;
+            } else {
+                // Rewind and try Perfect Links format (2 numbers) or FIFO format (1 number)
+                rewind(config);
+                items_read = fscanf(config, "%zu %zu", &parser->num_messages, &parser->num_nodes);
+                if (items_read < 1) {
+                    fprintf(stderr, "Invalid config file format\n");
+                    fclose(config);
+                    return -1;
+                }
+                parser->num_proposals = 0;
+                parser->vs = 0;
+                parser->ds = 0;
             }
-            // If only one number was read, num_nodes stays 0 (FIFO mode)
-            // If two numbers were read, both are set (Perfect Links mode)
             fclose(config);
         }
     }
@@ -199,6 +212,18 @@ const char* parser_get_config_path(const Parser* parser) {
 
 size_t parser_get_num_messages(const Parser* parser) {
     return parser ? parser->num_messages : 0;
+}
+
+size_t parser_get_num_proposals(const Parser* parser) {
+    return parser ? parser->num_proposals : 0;
+}
+
+size_t parser_get_vs(const Parser* parser) {
+    return parser ? parser->vs : 0;
+}
+
+size_t parser_get_ds(const Parser* parser) {
+    return parser ? parser->ds : 0;
 }
 
 void parser_destroy(Parser* parser) {

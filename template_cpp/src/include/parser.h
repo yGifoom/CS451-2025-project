@@ -25,6 +25,10 @@ typedef struct Parser {
     char* config_path;
     size_t num_messages;
     size_t num_nodes;
+    // Lattice Agreement config
+    size_t num_proposals;
+    size_t vs;
+    size_t ds;
 } Parser;
 
 // Initialize parser with command line arguments
@@ -39,6 +43,11 @@ const Host* parser_get_hosts(const Parser* parser, size_t* count);
 const char* parser_get_output_path(const Parser* parser);
 const char* parser_get_config_path(const Parser* parser);
 size_t parser_get_num_messages(const Parser* parser);
+
+// Lattice Agreement getters
+size_t parser_get_num_proposals(const Parser* parser);
+size_t parser_get_vs(const Parser* parser);
+size_t parser_get_ds(const Parser* parser);
 
 // Cleanup
 void parser_destroy(Parser* parser);
