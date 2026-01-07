@@ -352,7 +352,10 @@ int la_recv_routine(la* la){
                     }
                     atomic_fetch_add(&la->next_tbd, 1);
                     if(atomic_load(&la->next_tbd) > (1 + la->round) * BUFFERED_PROPOSALS){
-                        proposal_load_next(la, BUFFERED_PROPOSALS);
+                        int res_loading_proposals = proposal_load_next(la, BUFFERED_PROPOSALS);
+                        if(res_loading_proposals != 0){
+                            // in case total rounds is not a multiple of buffered props 
+                        }
                     }
                 }
             }
@@ -519,13 +522,14 @@ int proposal_load_next(la* la_layer, int buffer_size){
     
     // Calculate which line to start reading from
     int start_read_line = la_layer->round * BUFFERED_PROPOSALS;
-    
+    int ;
     // Read and process BUFFERED_PROPOSALS lines
     for (int i = 0; i < buffer_size && i < BUFFERED_PROPOSALS; i++) {
         if (!fgets(line, sizeof(line), fp)) {
             // End of file reached
+
             fclose(fp);
-            return -1;
+            return i+1;
         }
         
         // Initialize the proposal's structure
