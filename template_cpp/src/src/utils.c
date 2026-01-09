@@ -34,75 +34,22 @@ void union_arrays(int* dest, int* size_dest, int* from, int size_from){
         return;
     }
     int added = 0;
-
-outer:  for(int i = 0; i < size_from; i++){
-            for(int j = 0; j < *size_dest; j++){
-                if(from[i] == dest[j]){
-                    goto outer;
-                }
+    
+    for(int i = 0; i < size_from; i++){
+        bool present = false;
+        for(int j = 0; j < *size_dest; j++){
+            if(from[i] == dest[j]){
+                present = true;break;
             }
+        }
+        if(!present){
             dest[*size_dest + added] = from[i];
             added++;
         }
+    }
     
     *size_dest += added;
     return;
-}
-
-int* intersection_arrays(int* set1, int set1_len, int* set2, int set2_len, int* res_len){
-    if(!set1 || !set2 || !set1_len || !set2_len || !res_len){
-        return NULL;
-    }
-    *res_len = 0;
-
-    int res_starting_size = set1_len > set2_len ? set1_len : set2_len;
-    int* result = malloc(sizeof(int) * (unsigned int)res_starting_size);
-    if(result == NULL){
-        return NULL; 
-    }
-
-
-set2_for:   for(int i = 0; i < set2_len; i++){
-                for(int j = 0; j < set1_len; j++){
-                    if(set2[i] == set1[j]){
-                        result[*res_len++] = set2[i];
-                        goto set2_for;
-                    }
-                }
-            }
-    
-    
-    void* realloc_res = realloc(result, sizeof(int) * (unsigned int)(*res_len));
-
-    free(result);
-    return realloc_res;
-}
-
-int* exclusion_arrays(int* set1, int set1_len, int* set2, int set2_len, int* res_len){
-    if(!set1 || !set2 || !set1_len || !set2_len || !res_len){
-        *res_len = 0;
-        return NULL;
-    }
-    *res_len = 0;
-
-    int* result = malloc(sizeof(int) * (unsigned int)set1_len);
-    if(result == NULL){
-        return NULL; 
-    }
-
-set1_for:   for(int i = 0; i < set1_len; i++){
-                for(int j = 0; j < set2_len; j++){
-                    if(set1[i] == set2[j]){
-                        goto set1_for;
-                    }
-                }
-                result[(*res_len)++] = set1[i];
-            }
-    
-    void* realloc_res = realloc(result, sizeof(int) * (unsigned int)(*res_len));
-
-    free(result);
-    return realloc_res;
 }
 
 bool is_subset(int* superset, int size_superset, int* subset, int size_subset){
@@ -110,25 +57,29 @@ bool is_subset(int* superset, int size_superset, int* subset, int size_subset){
         return false;
     }
 
-superset:   for(int i = 0; i < size_subset; i++){
-                for(int j = 0; j < size_superset; j++){
-                    if(subset[i] == superset[j]){
-                        goto superset;
-                    }
-                }
-                return false;
+    for(int i = 0; i < size_subset; i++){
+        bool found = false;
+        for(int j = 0; j < size_superset; j++){
+            if(subset[i] == superset[j]){
+                found = true;break;
             }
+        }
+        if(!found)return false;
+    }
 
     return true;
 }
 
 int translate_index_buffer(la* la_layer, int ID, int buffersize){
-    int x = ID % buffersize;
-    int exp_round = ID / buffersize;
+    int x = (ID - 1) % buffersize;
+    
+    int exp_round = ((ID - 1) / buffersize) + 1;
 
-    if (la_layer->round != exp_round){
-        return -1;
+    if (la_layer->round < exp_round){
+        return -1; // is a message which we will have in the buffer in the future, just wait
+    }else if(la_layer->round > exp_round){
+        return -2; // is a message which we got in the past and now got rid of
     }
 
-    return x - 1; // because we want an index
+    return x; // because we want an index
 }

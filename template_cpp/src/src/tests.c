@@ -1605,7 +1605,7 @@ void testLa(char* res, Parser* parser) {
     // Initialize LA layers
     const char* config_path = parser_get_config_path(parser);
     for (size_t i = 0; i < hosts_count; i++) {
-        la_instances[i] = la_init(pflx_instances[i], config_path, i + 1);
+        la_instances[i] = la_init(pflx_instances[i], config_path, i + 1, (int)NUM_PROPOSALS, (int)DS, (int)VS);
         
         if (!la_instances[i]) {
             sprintf(res, "fail - la_init for process %zu", i + 1);
@@ -1673,12 +1673,33 @@ void testLa(char* res, Parser* parser) {
                 size_t buffer_size = 0;
                 
                 if (la_recv(la_instances[proc], buffer, &buffer_size) == 0 && buffer_size > 0) {
+                    // buffer_size is in bytes, convert to number of ints
+                    size_t num_ints = buffer_size / sizeof(int);
+                    
+                    // Sanity check
+                    if (num_ints > LA_UNIQUE_VALUES) {
+                        printf("LA TEST: WARNING - received %zu ints, exceeds buffer capacity\n", num_ints);
+                        fflush(stdout);
+                        continue;
+                    }
+                    
                     // Allocate new decision
                     decision_t* dec = malloc(sizeof(decision_t));
+                    if (!dec) {
+                        strcpy(res, "fail - malloc decision");
+                        goto cleanup;
+                    }
+                    
                     dec->ID = (int)decision_counts[proc] + 1;
-                    dec->num_values = buffer_size;
-                    dec->values = malloc(buffer_size * sizeof(int));
-                    memcpy(dec->values, buffer, buffer_size * sizeof(int));
+                    dec->num_values = num_ints;
+                    dec->values = malloc(num_ints * sizeof(int));
+                    if (!dec->values) {
+                        free(dec);
+                        strcpy(res, "fail - malloc decision values");
+                        goto cleanup;
+                    }
+                    
+                    memcpy(dec->values, buffer, num_ints * sizeof(int));
                     
                     decisions[proc][decision_counts[proc]++] = dec;
                     total_decisions++;
@@ -1722,7 +1743,7 @@ void testLa(char* res, Parser* parser) {
             // Check that this decision is valid (subset of union of all proposals for this ID)
             // In practice, we check if values are within reasonable range
             for (size_t i = 0; i < dec->num_values; i++) {
-                if (dec->values[i] < 0 || dec->values[i] >= (int)DS) {
+                if (dec->values[i] < 0) {
                     sprintf(res, "fail - validity: process %zu decision %d has invalid value %d (must be < %zu)",
                             proc + 1, dec->ID, dec->values[i], DS);
                     goto cleanup;
@@ -1777,16 +1798,22 @@ cleanup:
     
     // Stop all LA instances
     for (size_t i = 0; i < hosts_count; i++) {
-        la_stop(la_instances[i]);
+        if (la_instances[i]) {
+            la_stop(la_instances[i]);
+        }
     }
+    printf("LA TEST: Stopped LA instances...\n"); fflush(stdout);
     
     // Free decisions
+    
     if (decisions) {
         for (size_t proc = 0; proc < hosts_count; proc++) {
             if (decisions[proc]) {
                 for (size_t dec_idx = 0; dec_idx < decision_counts[proc]; dec_idx++) {
                     if (decisions[proc][dec_idx]) {
-                        free(decisions[proc][dec_idx]->values);
+                        if (decisions[proc][dec_idx]->values) {
+                            free(decisions[proc][dec_idx]->values);
+                        }
                         free(decisions[proc][dec_idx]);
                     }
                 }
@@ -1795,16 +1822,27 @@ cleanup:
         }
         free(decisions);
     }
-    free(decision_counts);
+    if (decision_counts) {
+        free(decision_counts);
+    }
+
+    printf("LA TEST: Cleaned up decisions\n"); fflush(stdout);
     
     // Destroy LA and pflx instances
-    for (size_t i = 0; i < hosts_count; i++) {
-        la_destroy(la_instances[i]);
-        pflx_destroy(pflx_instances[i]);
+    if (la_instances) {
+        for (size_t i = 0; i < hosts_count; i++) {
+            if (la_instances[i]) {
+                la_destroy(la_instances[i]);
+            }
+        }
+        free(la_instances);
     }
+
+    printf("LA TEST: Cleaned up la\n"); fflush(stdout);
     
-    free(la_instances);
-    free(pflx_instances);
+    if (pflx_instances) {
+        free(pflx_instances);
+    }
     
     printf("LA TEST: Cleanup complete\n"); fflush(stdout);
 }

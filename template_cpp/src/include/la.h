@@ -78,7 +78,9 @@ typedef struct{
 
     atomic_int next_tbd;
     atomic_int round; 
+    pthread_mutex_t loading_buffer_mutex;
     la_buffered_entry* buffered_proposals;
+    queue_t* future_proposals;
 
     atomic_int shouldStop;
 
@@ -92,7 +94,7 @@ int la_recv(la* la, int* buffer_set, size_t* size_set);
 int la_send_routine(la* la);
 int la_recv_routine(la* la);
 int la_deliver(la* la, int ID);
-la* la_init(pflx* pflx_layer, const char* config_path, size_t pid);
+la* la_init(pflx* pflx_layer, const char* config_path, size_t pid, int p, int ds, int vs);
 int la_destroy(la*);
 
 int proposal_load_next(la*, int);
