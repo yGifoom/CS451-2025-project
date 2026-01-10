@@ -17,7 +17,7 @@
 #include"utils.h"
 
 
-static const int BUFFERED_PROPOSALS = 32;
+static const int BUFFERED_PROPOSALS = 16;
 static const int CONGESTION_CONTROL = 0;
 static const int BUFFERSIZE = 512;
 static const long TIMEOUT_QUEUE_POP = 1000; // in ms
@@ -203,11 +203,11 @@ int la_send_routine(la* la){
         printf("%zu-LA SEND ROUTINE: handling handle with id:%d type:%d\n", la->pid, msg_handle->ID, msg_handle->type_of_msg); fflush(stdout);
         
         // is ID in buffer?
-        pthread_mutex_lock(&la->loading_buffer_mutex);
+        pthread_mutex_lock(&la->sender_buffer_mutex);
         buffer_idx = translate_index_buffer(la, msg_handle->ID, BUFFERED_PROPOSALS);
         if (buffer_idx == -1){
             printf("%zu-LA SEND ROUTINE: recieved bad ID: %d, type: %d, round: %d, BUFFERED_PROPOSALS: %d \n", la->pid, msg_handle->ID, msg_handle->type_of_msg,atomic_load(&la->round), BUFFERED_PROPOSALS); fflush(stdout);
-            pthread_mutex_unlock(&la->loading_buffer_mutex);
+            pthread_mutex_unlock(&la->sender_buffer_mutex);
             continue;
         }
         
@@ -216,7 +216,7 @@ int la_send_routine(la* la){
         if (la->buffered_proposals[buffer_idx].prop.restransmits != msg_handle->retransmit){
             printf("%zu-LA SEND ROUTINE: wrong retransmit id:%d type:%d\n", la->pid, msg_handle->ID, msg_handle->type_of_msg); fflush(stdout);
             pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
-            pthread_mutex_unlock(&la->loading_buffer_mutex);
+            pthread_mutex_unlock(&la->sender_buffer_mutex);
             continue;
         } 
 
@@ -224,7 +224,7 @@ int la_send_routine(la* la){
         if (atomic_load(&la->next_tbd) > msg_handle->ID){
             printf("%zu-LA SEND ROUTINE: handle has been delivered already id:%d type:%d\n", la->pid, msg_handle->ID, msg_handle->type_of_msg); fflush(stdout);
             pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
-            pthread_mutex_unlock(&la->loading_buffer_mutex);
+            pthread_mutex_unlock(&la->sender_buffer_mutex);
             continue;
         }
 
@@ -244,7 +244,7 @@ int la_send_routine(la* la){
         int res_p2f = la_msg_to_frame(la, msg_handle, frame);
         // prop has been copied and can be unlocked 
         pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
-        pthread_mutex_unlock(&la->loading_buffer_mutex);
+        pthread_mutex_unlock(&la->sender_buffer_mutex);
 
         if(res_p2f != 0){
             printf("%zu-LA SEND ROUTINE: could not transform msg to frame id:%d type:%d\n", la->pid, msg_handle->ID, msg_handle->type_of_msg); fflush(stdout);
@@ -355,7 +355,7 @@ int la_recv_routine(la* la){
         
         // CHECK HANDLE IS RELEVANT
         // is ID in buffer?
-        pthread_mutex_lock(&la->loading_buffer_mutex);
+        pthread_mutex_lock(&la->reciever_buffer_mutex);
         int buffer_idx = translate_index_buffer(la, incoming_proposal->ID, BUFFERED_PROPOSALS);
         if (buffer_idx == -1){
             printf("%zu-LA RECV ROUTINE: recieved future ID: %d, type: %d, round: %d, BUFFERED_PROPOSALS: %d \n", la->pid, incoming_proposal->ID, incoming_proposal->type_of_msg, atomic_load(&la->round), BUFFERED_PROPOSALS); fflush(stdout);
@@ -363,13 +363,13 @@ int la_recv_routine(la* la){
             int* frame_cpy = malloc(frame_size);
             memcpy(frame_cpy, frame, frame_size);
             queue_push(la->future_proposals, frame_cpy, frame_size);
-            pthread_mutex_unlock(&la->loading_buffer_mutex);
+            pthread_mutex_unlock(&la->reciever_buffer_mutex);
             if(frame_is_from_future) free(frame);
             continue;
 
         }else if(buffer_idx == -2){
             printf("%zu-LA RECV ROUTINE: !PANIC! recieved old ID: %d, type: %d, round: %d, BUFFERED_PROPOSALS: %d \n", la->pid, incoming_proposal->ID, incoming_proposal->type_of_msg, atomic_load(&la->round), BUFFERED_PROPOSALS); fflush(stdout);
-            pthread_mutex_unlock(&la->loading_buffer_mutex);
+            pthread_mutex_unlock(&la->reciever_buffer_mutex);
             free(incoming_proposal);
             return 1;
         }
@@ -378,7 +378,7 @@ int la_recv_routine(la* la){
         pthread_mutex_lock(&la->buffered_proposals[buffer_idx].prop_lock);
         if (la->buffered_proposals[buffer_idx].prop.restransmits != incoming_proposal->retransmit){
             pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
-            pthread_mutex_unlock(&la->loading_buffer_mutex);
+            pthread_mutex_unlock(&la->reciever_buffer_mutex);
             printf("%zu-LA RECV ROUTINE: wrong retransmit id:%d type:%d\n", la->pid, incoming_proposal->ID, incoming_proposal->type_of_msg); fflush(stdout);
             if(frame_is_from_future) free(frame);
             continue;
@@ -403,7 +403,7 @@ int la_recv_routine(la* la){
             if (!outgoing_msg) {
                 printf("%zu-LA RECV ROUTINE: failed to allocate outgoing_msg\n", la->pid); fflush(stdout);
                 pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
-                pthread_mutex_unlock(&la->loading_buffer_mutex);
+                pthread_mutex_unlock(&la->reciever_buffer_mutex);
                 if(frame_is_from_future) free(frame);
                 continue;
             }
@@ -434,14 +434,14 @@ int la_recv_routine(la* la){
                     printf("%zu-LA RECV ROUTINE: error in la_sending id:%d\n", la->pid, outgoing_msg->ID); fflush(stdout);
                     free(outgoing_msg);  // Free on error
                     pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
-                    pthread_mutex_unlock(&la->loading_buffer_mutex);
+                    pthread_mutex_unlock(&la->reciever_buffer_mutex);
                     if(frame_is_from_future) free(frame);
                     continue;
                 }
 
             // outgoing_msg ownership transferred to queue, don't free it here
             pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
-            pthread_mutex_unlock(&la->loading_buffer_mutex);
+            pthread_mutex_unlock(&la->reciever_buffer_mutex);
             if(frame_is_from_future) free(frame);
                 
         }else if((incoming_proposal->type_of_msg == LA_ACK_TYPE || incoming_proposal->type_of_msg == LA_NACK_TYPE)
@@ -484,12 +484,13 @@ int la_recv_routine(la* la){
                 if (deliver_res != 0){
                     printf("%zu-LA RECV ROUTINE: error in delivery of id:%d, code: %d\n", la->pid, incoming_proposal->ID, deliver_res); fflush(stdout);
                     pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
-                    pthread_mutex_unlock(&la->loading_buffer_mutex);
+                    pthread_mutex_unlock(&la->reciever_buffer_mutex);
                     if(frame_is_from_future) free(frame);
                     continue;
                 }
                 
                 pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
+                pthread_mutex_unlock(&la->reciever_buffer_mutex);
 
                 atomic_fetch_add(&la->next_tbd, 1);
                 if(atomic_load(&la->next_tbd) > (atomic_load(&la->round) * BUFFERED_PROPOSALS) && la->round > 0){
@@ -503,20 +504,19 @@ int la_recv_routine(la* la){
 
                 }
 
-                pthread_mutex_unlock(&la->loading_buffer_mutex);
                 if(frame_is_from_future) free(frame);
                 continue;
             }
 
             pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
-            pthread_mutex_unlock(&la->loading_buffer_mutex);
+            pthread_mutex_unlock(&la->reciever_buffer_mutex);
             if(frame_is_from_future) free(frame);
 
         }else{
             // malformed header
             printf("%zu-LA RECV ROUTINE: malformed header for id:%d, type_of_msg: %d\n", la->pid, incoming_proposal->ID, incoming_proposal->type_of_msg); fflush(stdout);
             pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
-            pthread_mutex_unlock(&la->loading_buffer_mutex);
+            pthread_mutex_unlock(&la->reciever_buffer_mutex);
             if(frame_is_from_future) free(frame);
             continue;
         }
@@ -551,7 +551,19 @@ int la_deliver(la* la, int ID){
     }
     memcpy(delivered_set, la->buffered_proposals[buffer_index].prop.proposed_data, size_in_bytes);
 
+    printf("%zu-LA DELIVER: buffered_proposals at idx %d has %d\n",la->pid, buffer_index, la->buffered_proposals[buffer_index].prop.proposed_data[0]);fflush(stdout);
+    char log_buffer[4096];
+    int offset = snprintf(log_buffer, sizeof(log_buffer), "%zu-LA DELIVER: idx: %d, for ID %d, size decision: %zu [", la->pid, buffer_index, ID, num_elements);
+    for (size_t i = 0; i < num_elements && offset < (int)sizeof(log_buffer) - 10; i++) {
+        offset += snprintf(log_buffer + offset, sizeof(log_buffer) - (size_t)offset, 
+        "%d%s", delivered_set[i], (i < num_elements - 1) ? ", " : "");
+    }
+    snprintf(log_buffer + offset, sizeof(log_buffer) - (size_t)offset, "]\n");
+    printf("%s", log_buffer);
+    fflush(stdout);
+    
     queue_push(la->upQueue, delivered_set, size_in_bytes);
+
 
     return 0;
     
@@ -607,7 +619,9 @@ la* la_init(pflx* pflx_layer, const char* config_path, size_t pid, int p, int ds
         pthread_mutex_init(&la_layer->buffered_proposals[i].prop_lock, NULL);
     }
 
-    pthread_mutex_init(&la_layer->loading_buffer_mutex, NULL);
+    pthread_mutex_init(&la_layer->sender_buffer_mutex, NULL);
+    pthread_mutex_init(&la_layer->reciever_buffer_mutex, NULL);
+
 
     la_layer->next_tbd = 1;
 
@@ -634,7 +648,9 @@ int la_destroy(la* la_layer){
         pthread_mutex_destroy(&la_layer->buffered_proposals[i].prop_lock);
     }
 
-    pthread_mutex_destroy(&la_layer->loading_buffer_mutex);
+    pthread_mutex_destroy(&la_layer->sender_buffer_mutex);
+    pthread_mutex_destroy(&la_layer->reciever_buffer_mutex);
+
 
     // Destroy buffered proposals
     if (la_layer->buffered_proposals) {
@@ -671,24 +687,27 @@ int proposal_load_next(la* la_layer, int buffer_size){
         perror("Failed to open config file");
         return -1;
     }
-    printf("%zu-LA LOAD NEXT: skipping header line\n", la_layer->pid); fflush(stdout);
     // Skip header line (proposals_len vs ds)
     char line[1152];
-    char* res = NULL;
-    res = fgets(line, sizeof(line), fp);
     int round = atomic_load(&la_layer->round);
     // Skip to the start line for this round
     int start_read_line = round * BUFFERED_PROPOSALS;
-    for (int i = 0; i < start_read_line; i++) {
+    // i = -1 to skip also the header, did not add to start_read_line as compiler complained assuming signed overflow
+    for (int i = -1; i < start_read_line; i++) {
         if (!fgets(line, sizeof(line), fp)) {
             printf("%zu-LA LOAD NEXT: end of file reached upon skipping to starting line\n", la_layer->pid); fflush(stdout);
             fclose(fp);
             return -1;
         }
+        printf("%zu-LA LOAD NEXT: skipping line:%s\n", la_layer->pid, line); fflush(stdout);
     }
 
-    pthread_mutex_lock(&la_layer->loading_buffer_mutex);
+    pthread_mutex_lock(&la_layer->sender_buffer_mutex);
+    printf("%zu-LA LOAD NEXT: we live in a yellow submarine\n", la_layer->pid); fflush(stdout);
 
+    pthread_mutex_lock(&la_layer->reciever_buffer_mutex);
+
+    printf("%zu-LA LOAD NEXT: bababa bababarain\n", la_layer->pid); fflush(stdout);
     int partial_ID = 0;
     // Read and process BUFFERED_PROPOSALS lines
     for (int i = 0; i < buffer_size && i < BUFFERED_PROPOSALS; i++) {
@@ -707,20 +726,22 @@ int proposal_load_next(la* la_layer, int buffer_size){
         la_layer->buffered_proposals[i].prop.active = true;
         la_layer->buffered_proposals[i].accepted_len = 0;
         
+        int ID = (round * BUFFERED_PROPOSALS) + (i + 1);
         // Tokenize and translate numbers to indices
         char* token = strtok(line, " ");
+        int num_tokens = 0;
         while (token != NULL) {
 
-            la_layer->buffered_proposals[i].prop.proposed_data[i] = atoi(token);
+            la_layer->buffered_proposals[i].prop.proposed_data[num_tokens] = atoi(token);
             la_layer->buffered_proposals[i].prop.proposal_len++; 
 
-            printf("%zu-LA LOAD NEXT: proposal len for %d index is %d, last added value: %d\n", la_layer->pid, la_layer->buffered_proposals[i].prop.proposal_len, i, la_layer->buffered_proposals[i].prop.proposed_data[i]); fflush(stdout);
+            printf("%zu-LA LOAD NEXT: id:%d, index is %d, now size is: %d, last added value: %d\n", la_layer->pid, ID, i, la_layer->buffered_proposals[i].prop.proposal_len, la_layer->buffered_proposals[i].prop.proposed_data[i]); fflush(stdout);
             
             token = strtok(NULL, " ");
+            num_tokens++;
         }
         
         // create proposal and send it
-        int ID = (round * BUFFERED_PROPOSALS) + (i + 1);
         la_handle* handle = la_handle_init(ID, 0, 0, LA_PROPOSAL_TYPE);
         if(handle == NULL){
             printf("%zu-LA LOAD NEXT: CRITICAL ERROR handle init not succesful", la_layer->pid); fflush(stdout);
@@ -730,7 +751,8 @@ int proposal_load_next(la* la_layer, int buffer_size){
     }
 
     atomic_fetch_add(&la_layer->round, 1);
-    pthread_mutex_unlock(&la_layer->loading_buffer_mutex);
+    pthread_mutex_unlock(&la_layer->sender_buffer_mutex);
+    pthread_mutex_unlock(&la_layer->reciever_buffer_mutex);
 
     printf("%zu-LA LOAD NEXT: finished succesfully\n", la_layer->pid); fflush(stdout);
     fclose(fp);

@@ -78,7 +78,8 @@ typedef struct{
 
     atomic_int next_tbd;
     atomic_int round; 
-    pthread_mutex_t loading_buffer_mutex;
+    pthread_mutex_t sender_buffer_mutex;
+    pthread_mutex_t reciever_buffer_mutex;
     la_buffered_entry* buffered_proposals;
     queue_t* future_proposals;
 

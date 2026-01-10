@@ -1705,6 +1705,19 @@ void testLa(char* res, Parser* parser) {
                     total_decisions++;
                     progress = 1;
                     
+                    // Log the decided values similar to LA DELIVER format
+                    char log_buffer[4096];
+                    int offset = snprintf(log_buffer, sizeof(log_buffer), 
+                                         "LA TEST: Process %zu decided ID %d with %zu elements [", 
+                                         proc + 1, dec->ID, dec->num_values);
+                    for (size_t v = 0; v < dec->num_values && offset < (int)sizeof(log_buffer) - 10; v++) {
+                        offset += snprintf(log_buffer + offset, sizeof(log_buffer) - (size_t)offset,
+                                          "%d%s", dec->values[v], (v < dec->num_values - 1) ? ", " : "");
+                    }
+                    snprintf(log_buffer + offset, sizeof(log_buffer) - (size_t)offset, "]\n");
+                    printf("%s", log_buffer);
+                    fflush(stdout);
+                    
                     if (total_decisions % 100 == 0) {
                         printf("LA TEST: Collected %zu/%zu decisions\n", total_decisions, total_expected);
                         fflush(stdout);
