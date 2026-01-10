@@ -22,7 +22,8 @@ typedef struct Parser {
     Host* hosts;
     size_t hosts_count;
     char* output_path;
-    char* config_path;
+    char** config_paths;      // Array of config paths
+    size_t config_paths_count; // Number of config paths
     size_t num_messages;
     size_t num_nodes;
     // Lattice Agreement config
@@ -42,6 +43,10 @@ uint32_t parser_get_id(const Parser* parser);
 const Host* parser_get_hosts(const Parser* parser, size_t* count);
 const char* parser_get_output_path(const Parser* parser);
 const char* parser_get_config_path(const Parser* parser);
+// Get config path for a specific process (1-indexed)
+const char* parser_get_config_path_for_process(const Parser* parser, size_t process_id);
+// Get the number of config paths
+size_t parser_get_config_paths_count(const Parser* parser);
 size_t parser_get_num_messages(const Parser* parser);
 
 // Lattice Agreement getters

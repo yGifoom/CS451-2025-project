@@ -109,7 +109,8 @@ Parser* parser_create(int argc, char** argv) {
     parser->hosts = NULL;
     parser->hosts_count = 0;
     parser->output_path = NULL;
-    parser->config_path = NULL;
+    parser->config_paths = NULL;
+    parser->config_paths_count = 0;
     parser->num_messages = 0;
     parser->num_nodes = 0;
     parser->num_proposals = 0;
@@ -124,7 +125,7 @@ int parser_parse(Parser* parser) {
     
     // Parse --id
     if (parser->argc < 3 || strcmp(parser->argv[1], "--id") != 0) {
-        fprintf(stderr, "Usage: %s --id ID --hosts HOSTS --output OUTPUT [CONFIG]\n", parser->argv[0]);
+        fprintf(stderr, "Usage: %s --id ID --hosts HOSTS --output OUTPUT [CONFIG...]\n", parser->argv[0]);
         return -1;
     }
     
@@ -137,7 +138,7 @@ int parser_parse(Parser* parser) {
     
     // Parse --hosts
     if (parser->argc < 5 || strcmp(parser->argv[3], "--hosts") != 0) {
-        fprintf(stderr, "Usage: %s --id ID --hosts HOSTS --output OUTPUT [CONFIG]\n", parser->argv[0]);
+        fprintf(stderr, "Usage: %s --id ID --hosts HOSTS --output OUTPUT [CONFIG...]\n", parser->argv[0]);
         return -1;
     }
     
@@ -145,20 +146,36 @@ int parser_parse(Parser* parser) {
     
     // Parse --output
     if (parser->argc < 7 || strcmp(parser->argv[5], "--output") != 0) {
-        fprintf(stderr, "Usage: %s --id ID --hosts HOSTS --output OUTPUT [CONFIG]\n", parser->argv[0]);
+        fprintf(stderr, "Usage: %s --id ID --hosts HOSTS --output OUTPUT [CONFIG...]\n", parser->argv[0]);
         return -1;
     }
     
     parser->output_path = my_strdup(parser->argv[6]);
     if (!parser->output_path) return -1;
     
-    // Parse config (optional)
+    // Parse config paths (can be multiple for lattice agreement)
     if (parser->argc >= 8) {
-        parser->config_path = my_strdup(parser->argv[7]);
-        if (!parser->config_path) return -1;
+        // Count remaining arguments as config paths
+        size_t num_configs = (size_t)(parser->argc - 7);
+        parser->config_paths = (char**)malloc(sizeof(char*) * num_configs);
+        if (!parser->config_paths) return -1;
         
-        // Parse config file
-        FILE* config = fopen(parser->config_path, "r");
+        for (size_t i = 0; i < num_configs; i++) {
+            parser->config_paths[i] = my_strdup(parser->argv[7 + i]);
+            if (!parser->config_paths[i]) {
+                // Cleanup on failure
+                for (size_t j = 0; j < i; j++) {
+                    free(parser->config_paths[j]);
+                }
+                free(parser->config_paths);
+                parser->config_paths = NULL;
+                return -1;
+            }
+            parser->config_paths_count++;
+        }
+        
+        // Parse the first config file to get parameters
+        FILE* config = fopen(parser->config_paths[0], "r");
         if (config) {
             // Try to read three numbers first (Lattice Agreement format)
             int items_read = fscanf(config, "%zu %zu %zu", &parser->num_proposals, &parser->vs, &parser->ds);
@@ -207,7 +224,28 @@ const char* parser_get_output_path(const Parser* parser) {
 }
 
 const char* parser_get_config_path(const Parser* parser) {
-    return parser ? parser->config_path : NULL;
+    // Return the first config path for backward compatibility
+    if (!parser || parser->config_paths_count == 0) return NULL;
+    return parser->config_paths[0];
+}
+
+const char* parser_get_config_path_for_process(const Parser* parser, size_t process_id) {
+    if (!parser || parser->config_paths_count == 0) return NULL;
+    
+    // If only one config path, use it for all processes
+    if (parser->config_paths_count == 1) {
+        return parser->config_paths[0];
+    }
+    
+    // process_id is 1-indexed, array is 0-indexed
+    if (process_id < 1 || process_id > parser->config_paths_count) {
+        return NULL;
+    }
+    return parser->config_paths[process_id - 1];
+}
+
+size_t parser_get_config_paths_count(const Parser* parser) {
+    return parser ? parser->config_paths_count : 0;
 }
 
 size_t parser_get_num_messages(const Parser* parser) {
@@ -230,13 +268,20 @@ void parser_destroy(Parser* parser) {
     if (!parser) return;
     
     if (parser->hosts) {
+        for (size_t i = 0; i < parser->hosts_count; i++) {
+            free(parser->hosts[i].ip_readable);
+            free(parser->hosts[i].port_readable);
+        }
         free(parser->hosts);
     }
     if (parser->output_path) {
         free(parser->output_path);
     }
-    if (parser->config_path) {
-        free(parser->config_path);
+    if (parser->config_paths) {
+        for (size_t i = 0; i < parser->config_paths_count; i++) {
+            free(parser->config_paths[i]);
+        }
+        free(parser->config_paths);
     }
     free(parser);
 }

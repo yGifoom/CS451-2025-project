@@ -729,7 +729,8 @@ int proposal_load_next(la* la_layer, int buffer_size){
             la_layer->buffered_proposals[i].prop.proposed_data[num_tokens] = atoi(token);
             la_layer->buffered_proposals[i].prop.proposal_len++; 
 
-            printf("%zu-LA LOAD NEXT: id:%d, index is %d, now size is: %d, last added value: %d\n", la_layer->pid, ID, i, la_layer->buffered_proposals[i].prop.proposal_len, la_layer->buffered_proposals[i].prop.proposed_data[i]); fflush(stdout);
+            printf("%zu-LA LOAD NEXT: id:%d, index is %d, now size is: %d, last added value: %d\n", 
+                la_layer->pid, ID, i, la_layer->buffered_proposals[i].prop.proposal_len, la_layer->buffered_proposals[i].prop.proposed_data[num_tokens]); fflush(stdout);
             
             token = strtok(NULL, " ");
             num_tokens++;

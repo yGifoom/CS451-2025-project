@@ -1571,8 +1571,21 @@ void testLa(char* res, Parser* parser) {
         return;
     }
     
+    // Verify we have enough config paths (one per process, or one shared)
+    size_t config_count = parser_get_config_paths_count(parser);
+    if (config_count == 0) {
+        strcpy(res, "fail - no config paths provided");
+        return;
+    }
+    
+    if (config_count > 1 && config_count != hosts_count) {
+        sprintf(res, "fail - expected 1 or %zu config paths, got %zu", hosts_count, config_count);
+        return;
+    }
+    
     printf("LA TEST: Initializing %zu processes with %zu proposals each (VS=%zu, DS=%zu)\n", 
            hosts_count, NUM_PROPOSALS, VS, DS);
+    printf("LA TEST: Using %zu config path(s)\n", config_count);
     fflush(stdout);
     
     // Initialize pflx and LA instances for all processes
@@ -1602,9 +1615,22 @@ void testLa(char* res, Parser* parser) {
     
     printf("LA TEST: All pflx instances initialized\n"); fflush(stdout);
     
-    // Initialize LA layers
-    const char* config_path = parser_get_config_path(parser);
+    // Initialize LA layers with process-specific config paths
     for (size_t i = 0; i < hosts_count; i++) {
+        // Get config path for this specific process (1-indexed)
+        const char* config_path = parser_get_config_path_for_process(parser, i + 1);
+        if (!config_path) {
+            sprintf(res, "fail - no config path for process %zu", i + 1);
+            for (size_t j = 0; j < i; j++) la_destroy(la_instances[j]);
+            for (size_t j = 0; j < hosts_count; j++) pflx_destroy(pflx_instances[j]);
+            free(pflx_instances);
+            free(la_instances);
+            return;
+        }
+        
+        printf("LA TEST: Process %zu using config: %s\n", i + 1, config_path);
+        fflush(stdout);
+        
         la_instances[i] = la_init(pflx_instances[i], config_path, i + 1, (int)NUM_PROPOSALS, (int)DS, (int)VS);
         
         if (!la_instances[i]) {
