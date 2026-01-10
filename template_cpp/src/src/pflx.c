@@ -9,7 +9,7 @@
 #include <errno.h>
 #include<time.h>
 
-const int CONGESTION_CONTROL = 100000000;
+const int CONGESTION_CONTROL = 10000000;
 const int BUFFERSIZE = 256;
 const long TIMEOUT_QUEUE_POP = 1000; // in ms
 const long MAX_DOWNQUEUE_SIZE = 10000000;

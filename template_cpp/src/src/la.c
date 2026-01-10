@@ -240,7 +240,6 @@ int la_send_routine(la* la){
             // +1 to accomodate the empty set of proposals
             frame_size = sizeof(int) * (LA_FRAME_HEADER_SIZE + 1);
         }
-        printf("%zu-LA SEND ROUTINE: making into frame id:%d type:%d\n", la->pid, msg_handle->ID, msg_handle->type_of_msg); fflush(stdout);
         int res_p2f = la_msg_to_frame(la, msg_handle, frame);
         // prop has been copied and can be unlocked 
         pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
@@ -367,7 +366,7 @@ int la_recv_routine(la* la){
             if(frame_is_from_future) free(frame);
             continue;
 
-        }else if(buffer_idx == -2){
+        }else if(buffer_idx == -2 && incoming_proposal->type_of_msg == LA_PROPOSAL_TYPE){
             printf("%zu-LA RECV ROUTINE: !PANIC! recieved old ID: %d, type: %d, round: %d, BUFFERED_PROPOSALS: %d \n", la->pid, incoming_proposal->ID, incoming_proposal->type_of_msg, atomic_load(&la->round), BUFFERED_PROPOSALS); fflush(stdout);
             pthread_mutex_unlock(&la->reciever_buffer_mutex);
             free(incoming_proposal);
@@ -493,7 +492,7 @@ int la_recv_routine(la* la){
                 pthread_mutex_unlock(&la->reciever_buffer_mutex);
 
                 atomic_fetch_add(&la->next_tbd, 1);
-                if(atomic_load(&la->next_tbd) > (atomic_load(&la->round) * BUFFERED_PROPOSALS) && la->round > 0){
+                if(atomic_load(&la->next_tbd) > (atomic_load(&la->round) * BUFFERED_PROPOSALS) && la->round > 0 && atomic_load(&la->next_tbd) <= la->proposals_len){
                     printf("%zu-LA RECV ROUTINE: loading next proposals\n", la->pid); fflush(stdout);
 
                     int res_loading_proposals = proposal_load_next(la, BUFFERED_PROPOSALS);
@@ -514,7 +513,7 @@ int la_recv_routine(la* la){
 
         }else{
             // malformed header
-            printf("%zu-LA RECV ROUTINE: malformed header for id:%d, type_of_msg: %d\n", la->pid, incoming_proposal->ID, incoming_proposal->type_of_msg); fflush(stdout);
+            printf("%zu-LA RECV ROUTINE: malformed header or inactive for id:%d, type_of_msg: %d, active: %d\n", la->pid, incoming_proposal->ID, incoming_proposal->type_of_msg, la->buffered_proposals[buffer_idx].prop.active); fflush(stdout);
             pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
             pthread_mutex_unlock(&la->reciever_buffer_mutex);
             if(frame_is_from_future) free(frame);
@@ -669,7 +668,6 @@ int beb_with_pflx(pflx* beb, size_t own_pid, void* message, size_t message_size)
     }
     for(size_t i = 1; i<=beb->phonebook_size; i++){
         if(i == own_pid) continue;
-        printf("%zu-LA BEB: sending to :%zu\n", own_pid, i); fflush(stdout);
         int res_pflx = pflx_send(beb, message, message_size, own_pid, i);
         if (res_pflx != 0 && message != NULL){
             i--; // might block indefinetly if pflx_send keeps failing
@@ -699,15 +697,11 @@ int proposal_load_next(la* la_layer, int buffer_size){
             fclose(fp);
             return -1;
         }
-        printf("%zu-LA LOAD NEXT: skipping line:%s\n", la_layer->pid, line); fflush(stdout);
     }
 
     pthread_mutex_lock(&la_layer->sender_buffer_mutex);
-    printf("%zu-LA LOAD NEXT: we live in a yellow submarine\n", la_layer->pid); fflush(stdout);
-
     pthread_mutex_lock(&la_layer->reciever_buffer_mutex);
 
-    printf("%zu-LA LOAD NEXT: bababa bababarain\n", la_layer->pid); fflush(stdout);
     int partial_ID = 0;
     // Read and process BUFFERED_PROPOSALS lines
     for (int i = 0; i < buffer_size && i < BUFFERED_PROPOSALS; i++) {
