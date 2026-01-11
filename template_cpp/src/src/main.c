@@ -40,11 +40,11 @@ void tests(char* res, Parser* parser){
     testFifo(fifo_res, parser);
     printf("TEST FIFO: %s\n", fifo_res);
     free(fifo_res);*/
-    /*
+    
     char* node_res = malloc(sizeof(char) * 50);
     testNodeSeq(node_res, parser);
     printf("Test NodeSeq: %s\n", node_res);
-    free(node_res);*/
+    free(node_res);
     
     /*
     char* ba_res = malloc(sizeof(char) * 50);
@@ -52,10 +52,11 @@ void tests(char* res, Parser* parser){
     printf("Test testBa: %s\n", ba_res);
     free(ba_res);*/
 
+    /*
     char* la_res = malloc(sizeof(char) * 50);
     testLa(la_res, parser);
     printf("Test testLa: %s\n", la_res);
-    free(la_res);
+    free(la_res);*/
 
     return;
 }
@@ -120,22 +121,28 @@ int main(int argc, char** argv) {
         size_t hosts_count;
         const Host* hosts = parser_get_hosts(parser, &hosts_count);
         
-        const size_t NUM_MESSAGES = parser_get_num_messages(parser);
-        if (NUM_MESSAGES == 0) {
-            printf("fail - no messages in config\n");
+        const size_t NUM_PROPOSALS = parser_get_num_proposals(parser);
+        if (NUM_PROPOSALS == 0) {
+            printf("fail - no proposals in config\n");
+            parser_destroy(parser);
             return 1;
         }
         
         const size_t nodeId = parser_get_id(parser);
+        const char* config_path = parser_get_config_path_for_process(parser, nodeId);
+        int ds = (int)parser_get_ds(parser);
+        int vs = (int)parser_get_vs(parser);
 
         // Create temporary log files
         const char* node_log = parser_get_output_path(parser);
         printf("initializing node....\n");
+        printf("NUM_PROPOSALS: %zu, ds: %d, vs: %d\n", NUM_PROPOSALS, ds, vs);
         
         // Initialize nodes using node_init
-        Node* node = node_init(nodeId, NUM_MESSAGES, hosts, hosts_count, node_log);
+        Node* node = node_init(nodeId, NUM_PROPOSALS, hosts, hosts_count, node_log, config_path, ds, vs);
         if (!node) {
-            printf("fail - failed to initialize node %zu", node->processId);
+            printf("fail - failed to initialize node %zu\n", nodeId);
+            parser_destroy(parser);
             return 1;
         }
         printf("node initialized!\nstarting loop\n");

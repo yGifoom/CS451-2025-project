@@ -448,9 +448,17 @@ void testNodeSeq(char* res, Parser* parser) {
     struct timespec ts_sleep = { .tv_sec = (time_t)hosts_count, .tv_nsec = 0 };
     nanosleep(&ts_sleep, NULL);
     
-    const size_t NUM_MESSAGES = parser_get_num_messages(parser);
-    if (NUM_MESSAGES == 0) {
-        strcpy(res, "fail - no messages in config");
+    const size_t NUM_PROPOSALS = parser_get_num_proposals(parser);
+    const size_t VS = parser_get_vs(parser);
+    const size_t DS = parser_get_ds(parser);
+    
+    if (NUM_PROPOSALS == 0) {
+        strcpy(res, "fail - no proposals in config");
+        return;
+    }
+    
+    if (VS == 0 || DS == 0) {
+        strcpy(res, "fail - invalid VS or DS parameters");
         return;
     }
 
@@ -463,16 +471,30 @@ void testNodeSeq(char* res, Parser* parser) {
         if (f) fclose(f);
     }
 
-    printf("Initializing %zu nodes...\n", hosts_count);
+    printf("Initializing %zu nodes with %zu proposals each (VS=%zu, DS=%zu)...\n", 
+           hosts_count, NUM_PROPOSALS, VS, DS);
     
     // Initialize all nodes
     Node** nodes = malloc(hosts_count * sizeof(Node*));
     for (size_t i = 0; i < hosts_count; i++) {
-        nodes[i] = node_init(i + 1, NUM_MESSAGES, hosts, hosts_count, output_files[i]);
+        const char* config_path = parser_get_config_path_for_process(parser, i + 1);
+        if (!config_path) {
+            sprintf(res, "fail - no config path for process %zu", i + 1);
+            for (size_t j = 0; j < i; j++) {
+                if (nodes[j]) node_destroy(nodes[j]);
+            }
+            free(nodes);
+            for (size_t j = 0; j < hosts_count; j++) free(output_files[j]);
+            free(output_files);
+            return;
+        }
+        
+        nodes[i] = node_init(i + 1, NUM_PROPOSALS, hosts, hosts_count, output_files[i], 
+                             config_path, (int)DS, (int)VS);
         if (!nodes[i]) {
             sprintf(res, "fail - node init for process %zu", i + 1);
             for (size_t j = 0; j < i; j++) {
-                if (nodes[j]) free(nodes[j]);
+                if (nodes[j]) node_destroy(nodes[j]);
             }
             free(nodes);
             for (size_t j = 0; j < hosts_count; j++) free(output_files[j]);
@@ -535,16 +557,14 @@ void testNodeSeq(char* res, Parser* parser) {
     
     printf("All node loops finished! Now checking results...\n");
     
-    // Read all output files
+    // Read all output files - each line is a decided set (space-separated integers)
     typedef struct {
-        size_t sender_id;
-        size_t msg_id;
-        int is_broadcast; // 1 for 'b', 0 for 'd'
-    } log_entry_t;
+        int* values;
+        size_t num_values;
+    } decision_t;
     
-    log_entry_t*** all_logs = malloc(hosts_count * sizeof(log_entry_t**));
-    size_t** log_counts = malloc(hosts_count * sizeof(size_t*));
-    size_t* total_counts = calloc(hosts_count, sizeof(size_t));
+    decision_t** all_decisions = malloc(hosts_count * sizeof(decision_t*));
+    size_t* decision_counts = calloc(hosts_count, sizeof(size_t));
     
     // Read each process's output
     for (size_t proc = 0; proc < hosts_count; proc++) {
@@ -556,184 +576,112 @@ void testNodeSeq(char* res, Parser* parser) {
         
         // Count lines first
         size_t line_count = 0;
-        char line[256];
+        char line[4096];
         while (fgets(line, sizeof(line), f)) line_count++;
         rewind(f);
         
-        // Allocate for broadcasts and deliveries separately
-        all_logs[proc] = malloc(2 * sizeof(log_entry_t*));
-        log_counts[proc] = calloc(2, sizeof(size_t));
-        all_logs[proc][0] = malloc(line_count * sizeof(log_entry_t)); // broadcasts
-        all_logs[proc][1] = malloc(line_count * sizeof(log_entry_t)); // deliveries
+        all_decisions[proc] = malloc(line_count * sizeof(decision_t));
         
-        // Parse file
+        // Parse file - each line is a decided set
         while (fgets(line, sizeof(line), f)) {
             line[strcspn(line, "\n")] = 0;
+            if (strlen(line) == 0) continue;
             
-            char type;
-            size_t id1, id2;
-            if (sscanf(line, "%c %zu %zu", &type, &id1, &id2) == 3 && type == 'd') {
-                // Delivery: d sender_id msg_id
-                log_entry_t* entry = &all_logs[proc][1][log_counts[proc][1]++];
-                entry->sender_id = id1;
-                entry->msg_id = id2;
-                entry->is_broadcast = 0;
-                total_counts[proc]++;
-            } else if (sscanf(line, "%c %zu", &type, &id1) == 2 && type == 'b') {
-                // Broadcast: b msg_id
-                log_entry_t* entry = &all_logs[proc][0][log_counts[proc][0]++];
-                entry->sender_id = proc + 1;
-                entry->msg_id = id1;
-                entry->is_broadcast = 1;
-                total_counts[proc]++;
+            // Count values in line
+            size_t num_vals = 0;
+            char* temp = my_strdup(line);
+            char* token = strtok(temp, " ");
+            while (token) {
+                num_vals++;
+                token = strtok(NULL, " ");
             }
+            free(temp);
+            
+            // Allocate and parse values
+            decision_t* dec = &all_decisions[proc][decision_counts[proc]];
+            dec->values = malloc(num_vals * sizeof(int));
+            dec->num_values = num_vals;
+            
+            temp = my_strdup(line);
+            token = strtok(temp, " ");
+            size_t idx = 0;
+            while (token && idx < num_vals) {
+                dec->values[idx++] = atoi(token);
+                token = strtok(NULL, " ");
+            }
+            free(temp);
+            
+            decision_counts[proc]++;
         }
         fclose(f);
     }
     
-    // Verify 1: Each process broadcasts exactly NUM_MESSAGES
+    // Verify 1: Each process decided exactly NUM_PROPOSALS times
     for (size_t proc = 0; proc < hosts_count; proc++) {
-        if (log_counts[proc][0] != NUM_MESSAGES) {
-            sprintf(res, "fail - process %zu broadcast %zu messages, expected %zu",
-                    proc + 1, log_counts[proc][0], NUM_MESSAGES);
+        if (decision_counts[proc] != NUM_PROPOSALS) {
+            sprintf(res, "fail - process %zu decided %zu times, expected %zu",
+                    proc + 1, decision_counts[proc], NUM_PROPOSALS);
             goto cleanup;
         }
-        
-        // Verify broadcasts are in order 1, 2, 3, ..., NUM_MESSAGES
-        for (size_t i = 0; i < NUM_MESSAGES; i++) {
-            if (all_logs[proc][0][i].msg_id != i + 1) {
-                sprintf(res, "fail - process %zu broadcast wrong order at position %zu", proc + 1, i);
-                goto cleanup;
-            }
-        }
     }
+    printf("All processes decided %zu proposals each\n", NUM_PROPOSALS);
     
-    // Verify 2: FIFO ordering - deliveries from same sender are in order
-    for (size_t proc = 0; proc < hosts_count; proc++) {
-        // Track last delivered message ID per sender
-        size_t* last_delivered = calloc(hosts_count, sizeof(size_t));
-        
-        for (size_t i = 0; i < log_counts[proc][1]; i++) {
-            size_t sender = all_logs[proc][1][i].sender_id;
-            size_t msg_id = all_logs[proc][1][i].msg_id;
-            
-            if (sender < 1 || sender > hosts_count) {
-                sprintf(res, "fail - process %zu delivered from invalid sender %zu", proc + 1, sender);
-                free(last_delivered);
-                goto cleanup;
-            }
-            
-            size_t sender_idx = sender - 1;
-            if (msg_id != last_delivered[sender_idx] + 1) {
-                sprintf(res, "fail - process %zu: FIFO violation for sender %zu (got %zu, expected %zu)",
-                        proc + 1, sender, msg_id, last_delivered[sender_idx] + 1);
-                free(last_delivered);
-                goto cleanup;
-            }
-            last_delivered[sender_idx] = msg_id;
-        }
-        free(last_delivered);
-    }
-    
-    // Verify 3: No duplicates
-    for (size_t proc = 0; proc < hosts_count; proc++) {
-        for (size_t i = 0; i < log_counts[proc][1]; i++) {
-            for (size_t j = i + 1; j < log_counts[proc][1]; j++) {
-                if (all_logs[proc][1][i].sender_id == all_logs[proc][1][j].sender_id &&
-                    all_logs[proc][1][i].msg_id == all_logs[proc][1][j].msg_id) {
-                    sprintf(res, "fail - process %zu has duplicate delivery of %zu:%zu",
-                            proc + 1, all_logs[proc][1][i].sender_id, all_logs[proc][1][i].msg_id);
+    // Verify 2: Consistency - for each proposal ID, all decisions must be comparable (subset relation)
+    for (size_t prop_id = 0; prop_id < NUM_PROPOSALS; prop_id++) {
+        for (size_t proc1 = 0; proc1 < hosts_count; proc1++) {
+            for (size_t proc2 = proc1 + 1; proc2 < hosts_count; proc2++) {
+                decision_t* dec1 = &all_decisions[proc1][prop_id];
+                decision_t* dec2 = &all_decisions[proc2][prop_id];
+                
+                // Check if dec1 ⊆ dec2 or dec2 ⊆ dec1
+                int dec1_subset_dec2 = is_subset(dec2->values, (int)dec2->num_values,
+                                                  dec1->values, (int)dec1->num_values);
+                int dec2_subset_dec1 = is_subset(dec1->values, (int)dec1->num_values,
+                                                  dec2->values, (int)dec2->num_values);
+                
+                if (!dec1_subset_dec2 && !dec2_subset_dec1) {
+                    sprintf(res, "fail - consistency: proposal %zu, process %zu and %zu have incomparable decisions",
+                            prop_id + 1, proc1 + 1, proc2 + 1);
                     goto cleanup;
                 }
             }
         }
     }
+    printf("Consistency property satisfied\n");
     
-    // Verify 4: Agreement - if one process delivers a message, all must deliver it
-    // Build delivery sets: delivered[proc][sender] = set of msg_ids
-    bst_set*** delivered_sets = malloc(hosts_count * sizeof(bst_set**));
+    // Verify 3: Validity - decided values should be within valid range
     for (size_t proc = 0; proc < hosts_count; proc++) {
-        delivered_sets[proc] = malloc(hosts_count * sizeof(bst_set*));
-        for (size_t sender = 0; sender < hosts_count; sender++) {
-            delivered_sets[proc][sender] = bst_set_init();
-        }
-        
-        // Populate
-        for (size_t i = 0; i < log_counts[proc][1]; i++) {
-            size_t sender_idx = all_logs[proc][1][i].sender_id - 1;
-            size_t msg_id = all_logs[proc][1][i].msg_id;
-            bst_set_add(delivered_sets[proc][sender_idx], msg_id, NULL, 0);
-        }
-    }
-    
-    // Check agreement
-    for (size_t sender = 0; sender < hosts_count; sender++) {
-        // Find the maximum delivered message ID from this sender across all processes
-        size_t max_delivered = 0;
-        for (size_t proc = 0; proc < hosts_count; proc++) {
-            if (delivered_sets[proc][sender]->size > max_delivered) {
-                max_delivered = delivered_sets[proc][sender]->size;
-            }
-        }
-        
-        // Every process must have delivered the same number of messages from this sender
-        for (size_t proc = 0; proc < hosts_count; proc++) {
-            if (delivered_sets[proc][sender]->size != max_delivered) {
-                sprintf(res, "fail - agreement violated: process %zu delivered %zu messages from sender %zu, but at least one process delivered %zu",
-                        proc + 1, delivered_sets[proc][sender]->size, sender + 1, max_delivered);
-                goto cleanup_sets;
-            }
-            
-            // Verify each process has the same messages (1 through max_delivered)
-            for (size_t msg_id = 1; msg_id <= max_delivered; msg_id++) {
-                void* tmp = NULL;
-                size_t tmp_size = 0;
-                if (bst_set_lookup(delivered_sets[proc][sender], msg_id, &tmp, &tmp_size) != 1) {
-                    sprintf(res, "fail - agreement violated: process %zu missing message %zu from sender %zu",
-                            proc + 1, msg_id, sender + 1);
-                    goto cleanup_sets;
+        for (size_t prop_id = 0; prop_id < decision_counts[proc]; prop_id++) {
+            decision_t* dec = &all_decisions[proc][prop_id];
+            for (size_t i = 0; i < dec->num_values; i++) {
+                if (dec->values[i] < 1 || dec->values[i] > (int)VS) {
+                    sprintf(res, "fail - validity: process %zu proposal %zu has invalid value %d (must be 1-%zu)",
+                            proc + 1, prop_id + 1, dec->values[i], VS);
+                    goto cleanup;
                 }
             }
         }
     }
+    printf("Validity property satisfied\n");
     
-    // Verify 5: Each process delivers all broadcasts (including its own)
-    for (size_t proc = 0; proc < hosts_count; proc++) {
-        for (size_t sender = 0; sender < hosts_count; sender++) {
-            if (delivered_sets[proc][sender]->size != NUM_MESSAGES) {
-                sprintf(res, "fail - process %zu delivered %zu messages from sender %zu, expected %zu",
-                        proc + 1, delivered_sets[proc][sender]->size, sender + 1, NUM_MESSAGES);
-                goto cleanup_sets;
-            }
-        }
-    }
+    // Calculate total decisions and throughput
+    size_t total_decisions = NUM_PROPOSALS * hosts_count;
+    double decisions_per_sec = (double)total_decisions / ((double)elapsed_ms / 1000.0);
     
-    // Calculate total messages and throughput
-    size_t total_messages = NUM_MESSAGES * hosts_count * hosts_count;
-    double messages_per_sec = (double)total_messages / ((double)elapsed_ms / 1000.0);
-    
-    sprintf(res, "pass - %ld ms elapsed, %.2f msg/sec", elapsed_ms, messages_per_sec);
-
-cleanup_sets:
-    for (size_t proc = 0; proc < hosts_count; proc++) {
-        for (size_t sender = 0; sender < hosts_count; sender++) {
-            bst_set_destroy(delivered_sets[proc][sender]);
-        }
-        free(delivered_sets[proc]);
-    }
-    free(delivered_sets);
+    sprintf(res, "pass - %ld ms elapsed, %.2f decisions/sec", elapsed_ms, decisions_per_sec);
 
 cleanup:
     for (size_t proc = 0; proc < hosts_count; proc++) {
-        free(all_logs[proc][0]);
-        free(all_logs[proc][1]);
-        free(all_logs[proc]);
-        free(log_counts[proc]);
+        if (all_decisions[proc]) {
+            for (size_t i = 0; i < decision_counts[proc]; i++) {
+                free(all_decisions[proc][i].values);
+            }
+            free(all_decisions[proc]);
+        }
         free(output_files[proc]);
     }
-    free(all_logs);
-    free(log_counts);
-    free(total_counts);
+    free(all_decisions);
+    free(decision_counts);
     free(output_files);
 }
 

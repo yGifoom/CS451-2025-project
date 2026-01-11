@@ -3,13 +3,13 @@
 
 #include<udp.h>
 #include<logger.h>
-#include<fifo.h>
+#include<la.h>
 
 typedef struct{
     size_t processId;
     size_t nextMessageId;
     size_t nOfMessages;
-    fifo* socket;
+    la* socket;
 
     Logger* logger;
 }Node;
@@ -18,9 +18,10 @@ typedef struct{
 int node_loop(Node* node);
 
 // construct node
-Node* node_init(size_t id, size_t numOfMessages, const Host* phonebook, size_t phonebook_size, const char* logfile);
+Node* node_init(size_t id, size_t numOfMessages, const Host* phonebook, size_t phonebook_size, 
+                const char* logfile, const char* config_path, int ds, int vs);
 
-// desctructor node
+// destructor node
 int node_destroy(Node* node);
 
 #endif
