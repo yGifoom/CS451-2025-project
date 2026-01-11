@@ -30,7 +30,7 @@ static int compare_ints(const void* a, const void* b) {
 }
 
 void union_arrays(int* dest, int* size_dest, int* from, int size_from){
-    if(!dest || !from || !size_dest || !size_from){
+    if(!dest || !from || !size_dest || size_from < 0){
         return;
     }
     int added = 0;
@@ -82,4 +82,28 @@ int translate_index_buffer(la* la_layer, int ID, int buffersize){
     }
 
     return x; // because we want an index
+}
+
+char* array_to_string(int* arr, int len) {
+    if (!arr || len <= 0) {
+        char* empty = (char*)malloc(3);
+        if (empty) strcpy(empty, "[]");
+        return empty;
+    }
+    
+    // Estimate buffer size: ~12 chars per int + separators + brackets
+    size_t buf_size = (size_t)len * 14 + 3;
+    char* result = (char*)malloc(buf_size);
+    if (!result) return NULL;
+    
+    char* ptr = result;
+    ptr += sprintf(ptr, "[");
+    
+    for (int i = 0; i < len; i++) {
+        if (i > 0) ptr += sprintf(ptr, ", ");
+        ptr += sprintf(ptr, "%d", arr[i]);
+    }
+    
+    sprintf(ptr, "]");
+    return result;
 }

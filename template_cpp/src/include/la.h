@@ -20,7 +20,7 @@ static const int BUFFERSIZE_OUTGOING = 512 * sizeof(int) * 2;
 int type_of_msg         4B
 int origin_ID           4B
 int target_ID           4B
-int ID               4B
+int ID                  4B
 int retransmit          4B
 int size_proposal       4B
 int* proposal           size_proposal * 4B

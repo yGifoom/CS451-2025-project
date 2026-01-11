@@ -213,7 +213,7 @@ int la_send_routine(la* la){
         
         // is retransmit correct?
         pthread_mutex_lock(&la->buffered_proposals[buffer_idx].prop_lock);
-        if (la->buffered_proposals[buffer_idx].prop.restransmits != msg_handle->retransmit){
+        if (la->buffered_proposals[buffer_idx].prop.restransmits != msg_handle->retransmit && msg_handle->type_of_msg == LA_PROPOSAL_TYPE){
             printf("%zu-LA SEND ROUTINE: wrong retransmit id:%d type:%d\n", la->pid, msg_handle->ID, msg_handle->type_of_msg); fflush(stdout);
             pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
             pthread_mutex_unlock(&la->sender_buffer_mutex);
@@ -221,7 +221,7 @@ int la_send_routine(la* la){
         } 
 
         // has it been delivered already?
-        if (atomic_load(&la->next_tbd) > msg_handle->ID){
+        if (atomic_load(&la->next_tbd) > msg_handle->ID && msg_handle->type_of_msg == LA_PROPOSAL_TYPE){
             printf("%zu-LA SEND ROUTINE: handle has been delivered already id:%d type:%d\n", la->pid, msg_handle->ID, msg_handle->type_of_msg); fflush(stdout);
             pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
             pthread_mutex_unlock(&la->sender_buffer_mutex);
@@ -233,11 +233,14 @@ int la_send_routine(la* la){
         int frame_size = 0;
 
         // give more space only if is not ack
-        if(msg_handle->type_of_msg != LA_ACK_TYPE){
+        if(msg_handle->type_of_msg == LA_PROPOSAL_TYPE){
             frame_size = (int)sizeof(int) * (LA_FRAME_HEADER_SIZE + proposal_size);
         }
+        else if(msg_handle->type_of_msg == LA_NACK_TYPE){
+            frame_size = (int)sizeof(int) * (LA_FRAME_HEADER_SIZE + la->buffered_proposals[buffer_idx].accepted_len);
+        }
         else{
-            // +1 to accomodate the empty set of proposals
+            // ACK: +1 to accommodate the empty set of proposals
             frame_size = sizeof(int) * (LA_FRAME_HEADER_SIZE + 1);
         }
         int res_p2f = la_msg_to_frame(la, msg_handle, frame);
@@ -375,10 +378,11 @@ int la_recv_routine(la* la){
         
         // is retransmit correct?
         pthread_mutex_lock(&la->buffered_proposals[buffer_idx].prop_lock);
-        if (la->buffered_proposals[buffer_idx].prop.restransmits != incoming_proposal->retransmit){
+        if ((incoming_proposal->type_of_msg == LA_ACK_TYPE || incoming_proposal->type_of_msg == LA_NACK_TYPE) 
+        && la->buffered_proposals[buffer_idx].prop.restransmits != incoming_proposal->retransmit){
             pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
             pthread_mutex_unlock(&la->reciever_buffer_mutex);
-            printf("%zu-LA RECV ROUTINE: wrong retransmit id:%d type:%d\n", la->pid, incoming_proposal->ID, incoming_proposal->type_of_msg); fflush(stdout);
+            printf("%zu-LA RECV ROUTINE: wrong retransmit for id:%d type:%d, expected %d got %d\n", la->pid, incoming_proposal->ID, incoming_proposal->type_of_msg, la->buffered_proposals[buffer_idx].prop.restransmits, incoming_proposal->retransmit); fflush(stdout);
             if(frame_is_from_future) free(frame);
             continue;
         } 
@@ -387,7 +391,8 @@ int la_recv_routine(la* la){
         len_of_proposal = frame[LA_SIZE_PROPOSAL_HID];
         int* incoming_proposed_set = &frame[LA_FRAME_HEADER_SIZE];
 
-        printf("%zu-LA RECV ROUTINE: ABOUT TO PROCESS id:%d, from: %d, type of msg:%d, active: %d\n", la->pid, incoming_proposal->ID, frame[LA_ORIGIN_ID_HID], incoming_proposal->type_of_msg, la->buffered_proposals[buffer_idx].prop.active); fflush(stdout);
+        
+        printf("%zu-LA RECV ROUTINE: ABOUT TO PROCESS id:%d, retransmit: %d, from: %d, type of msg:%d, active: %d\n", la->pid, incoming_proposal->ID, incoming_proposal->retransmit, frame[LA_ORIGIN_ID_HID], incoming_proposal->type_of_msg, la->buffered_proposals[buffer_idx].prop.active); fflush(stdout);
         
         // recieving a proposal
         if(incoming_proposal->type_of_msg == LA_PROPOSAL_TYPE){
@@ -407,19 +412,18 @@ int la_recv_routine(la* la){
                 continue;
             }
 
-            printf("%zu-LA RECV ROUTINE: args for is_subset is %p with len %d, accepted values is:%p with len %d\n", la->pid, (void*)incoming_proposed_set, len_of_proposal, (void*)la->buffered_proposals[buffer_idx].accepted_values, la->buffered_proposals[buffer_idx].accepted_len); fflush(stdout);
             if (is_subset(incoming_proposed_set, len_of_proposal,
             la->buffered_proposals[buffer_idx].accepted_values, la->buffered_proposals[buffer_idx].accepted_len)){
-                printf("%zu-LA RECV ROUTINE: acceptance set of id:%d is subset, sending ack to %d\n", la->pid, incoming_proposal->ID, outgoing_msg->dest); fflush(stdout);
-
+                
                 outgoing_msg->type_of_msg = LA_ACK_TYPE;
-
+                
                 // update own accept set
                 memcpy(la->buffered_proposals[buffer_idx].accepted_values, incoming_proposed_set, (size_t)len_of_proposal * sizeof(int));
                 la->buffered_proposals[buffer_idx].accepted_len = len_of_proposal;
-
+                
+                printf("%zu-LA RECV ROUTINE: acceptance set of id:%d, retransmit: %d is subset (now is len:%d), sending ack to %d\n", la->pid, incoming_proposal->ID, la->buffered_proposals[buffer_idx].prop.restransmits, len_of_proposal, outgoing_msg->dest); fflush(stdout);
             } else {
-                printf("%zu-LA RECV ROUTINE: acceptance set of id:%d is not subset, sending nack to %d\n", la->pid, incoming_proposal->ID, outgoing_msg->dest); fflush(stdout);
+                printf("%zu-LA RECV ROUTINE: acceptance set of id:%d, retransmit: %d is not subset, sending nack to %d\n", la->pid, incoming_proposal->ID, la->buffered_proposals[buffer_idx].prop.restransmits, outgoing_msg->dest); fflush(stdout);
 
                 outgoing_msg->type_of_msg = LA_NACK_TYPE;
 
@@ -428,7 +432,7 @@ int la_recv_routine(la* la){
                 incoming_proposed_set, len_of_proposal);
 
             }
-            printf("%zu-LA RECV ROUTINE: sending back response for id:%d to dest:%d, type:%d\n", la->pid, outgoing_msg->ID, outgoing_msg->dest, outgoing_msg->type_of_msg); fflush(stdout);
+            printf("%zu-LA RECV ROUTINE: sending back response for id:%d retransmit: %d, to dest:%d, type:%d\n", la->pid, outgoing_msg->ID, outgoing_msg->retransmit, outgoing_msg->dest, outgoing_msg->type_of_msg); fflush(stdout);
             if(la_send(la, outgoing_msg) != 0){
                     printf("%zu-LA RECV ROUTINE: error in la_sending id:%d\n", la->pid, outgoing_msg->ID); fflush(stdout);
                     free(outgoing_msg);  // Free on error
@@ -447,23 +451,26 @@ int la_recv_routine(la* la){
         && la->buffered_proposals[buffer_idx].prop.active){
 
             if (incoming_proposal->type_of_msg == LA_ACK_TYPE){
-                printf("%zu-LA RECV ROUTINE: increasing ack for id:%d\n", la->pid, incoming_proposal->ID); fflush(stdout);
                 la->buffered_proposals[buffer_idx].prop.n_acks++;
+                printf("%zu-LA RECV ROUTINE: increasing ack for id:%d, retransmit: %d, now: %d\n", la->pid, incoming_proposal->ID, la->buffered_proposals[buffer_idx].prop.restransmits, la->buffered_proposals[buffer_idx].prop.n_acks); fflush(stdout);
             }else if(incoming_proposal->type_of_msg == LA_NACK_TYPE){
-                printf("%zu-LA RECV ROUTINE: increasing Nack for id:%d\n", la->pid, incoming_proposal->ID); fflush(stdout);
-                la->buffered_proposals[buffer_idx].prop.n_nacks++;
-                union_arrays(la->buffered_proposals[buffer_idx].prop.proposed_data, &la->buffered_proposals[buffer_idx].prop.proposal_len,
+                    la->buffered_proposals[buffer_idx].prop.n_nacks++;
+                    union_arrays(la->buffered_proposals[buffer_idx].prop.proposed_data, &la->buffered_proposals[buffer_idx].prop.proposal_len,
                     incoming_proposed_set, len_of_proposal);
+                
+                    printf("%zu-LA RECV ROUTINE: increasing nack for id:%d, retransmit: %d, now: %d. proposal set is now: %s\n", 
+                    la->pid, incoming_proposal->ID, la->buffered_proposals[buffer_idx].prop.restransmits, la->buffered_proposals[buffer_idx].prop.n_nacks, 
+                    array_to_string(la->buffered_proposals[buffer_idx].prop.proposed_data, la->buffered_proposals[buffer_idx].prop.proposal_len)); fflush(stdout);
             }
 
             // should nack_reset?
-            if(la->buffered_proposals[buffer_idx].prop.n_acks + la->buffered_proposals[buffer_idx].prop.n_nacks > f + 1 &&
-            la->buffered_proposals[buffer_idx].prop.n_nacks > 0){
-                printf("%zu-LA RECV ROUTINE: nack resetting of id:%d\n", la->pid, incoming_proposal->ID); fflush(stdout);
+            if(la->buffered_proposals[buffer_idx].prop.n_acks + la->buffered_proposals[buffer_idx].prop.n_nacks > f &&
+            la->buffered_proposals[buffer_idx].prop.n_nacks > 0 && la->buffered_proposals[buffer_idx].prop.proposal_len < la->ds){
                 // union on accept so that send routing can create the corresponding frame
                 la->buffered_proposals[buffer_idx].prop.n_acks = 0;
                 la->buffered_proposals[buffer_idx].prop.n_nacks = 0;
                 la->buffered_proposals[buffer_idx].prop.restransmits++;
+                printf("%zu-LA RECV ROUTINE: nack resetting of id:%d, retransmit now: %d\n", la->pid, incoming_proposal->ID, la->buffered_proposals[buffer_idx].prop.restransmits); fflush(stdout);
                 
                 // Re-broadcast the proposal with new retransmit count
                 la_handle* retransmit_handle = la_handle_init(
@@ -476,9 +483,11 @@ int la_recv_routine(la* la){
                     la_send(la, retransmit_handle);
                 }
             }
+
             // deliver check
-            else if(la->buffered_proposals[buffer_idx].prop.n_acks > f + 1 && la->next_tbd == incoming_proposal->ID){
-                printf("%zu-LA RECV ROUTINE: delivery in order of id:%d\n", la->pid, incoming_proposal->ID); fflush(stdout);
+            else if((la->buffered_proposals[buffer_idx].prop.n_acks > f && la->next_tbd == incoming_proposal->ID) 
+                || la->buffered_proposals[buffer_idx].prop.proposal_len >= la->ds){
+                printf("%zu-LA RECV ROUTINE: delivery in order of id:%d, retransmit: %d\n", la->pid, incoming_proposal->ID, la->buffered_proposals[buffer_idx].prop.restransmits); fflush(stdout);
                 int deliver_res = la_deliver(la, incoming_proposal->ID);
                 if (deliver_res != 0){
                     printf("%zu-LA RECV ROUTINE: error in delivery of id:%d, code: %d\n", la->pid, incoming_proposal->ID, deliver_res); fflush(stdout);
@@ -713,18 +722,23 @@ int proposal_load_next(la* la_layer, int buffer_size){
         }
         
         // Initialize the proposal's structure
-        la_layer->buffered_proposals[i].prop.n_acks = 1; // every process acks its own
+        la_layer->buffered_proposals[i].prop.n_acks = 0;
         la_layer->buffered_proposals[i].prop.n_nacks = 0;
         la_layer->buffered_proposals[i].prop.restransmits = 0;
-        la_layer->buffered_proposals[i].prop.proposal_len = 0; 
+        la_layer->buffered_proposals[i].prop.proposal_len = 0;
         la_layer->buffered_proposals[i].prop.active = true;
         la_layer->buffered_proposals[i].accepted_len = 0;
         
         int ID = (round * BUFFERED_PROPOSALS) + (i + 1);
-        // Tokenize and translate numbers to indices
-        char* token = strtok(line, " ");
+        // Tokenize and translate numbers to indices - include newline and tab as delimiters
+        char* token = strtok(line, " \t\n\r");
         int num_tokens = 0;
         while (token != NULL) {
+            // Skip empty tokens
+            if (token[0] == '\0') {
+                token = strtok(NULL, " \t\n\r");
+                continue;
+            }
 
             la_layer->buffered_proposals[i].prop.proposed_data[num_tokens] = atoi(token);
             la_layer->buffered_proposals[i].prop.proposal_len++; 
@@ -732,7 +746,7 @@ int proposal_load_next(la* la_layer, int buffer_size){
             printf("%zu-LA LOAD NEXT: id:%d, index is %d, now size is: %d, last added value: %d\n", 
                 la_layer->pid, ID, i, la_layer->buffered_proposals[i].prop.proposal_len, la_layer->buffered_proposals[i].prop.proposed_data[num_tokens]); fflush(stdout);
             
-            token = strtok(NULL, " ");
+            token = strtok(NULL, " \t\n\r");
             num_tokens++;
         }
         
@@ -788,13 +802,16 @@ int la_msg_to_frame(la* la, la_handle* handle, int frame[BUFFERSIZE_OUTGOING]){
             la_proposal prop = la->buffered_proposals[buffer_idx].prop;
             size_set = (size_t)prop.proposal_len;
             
-            memcpy(&frame[LA_FRAME_HEADER_SIZE], prop.proposed_data, size_set);
+            memcpy(&frame[LA_FRAME_HEADER_SIZE], prop.proposed_data, size_set * sizeof(int));
         }else if(handle->type_of_msg == LA_NACK_TYPE){
             // union incoming proposed value + accepted value
             int* accepted_vals = la->buffered_proposals[buffer_idx].accepted_values;
             size_set = (size_t)la->buffered_proposals[buffer_idx].accepted_len;
             
-            memcpy(&frame[LA_FRAME_HEADER_SIZE], accepted_vals, size_set);
+            memcpy(&frame[LA_FRAME_HEADER_SIZE], accepted_vals, size_set * sizeof(int));
+
+            printf("%zu-LA MSG TO FRAME: dest:%d, array outgoing is: %s, of size: %d\n", la->pid, handle->dest, 
+            array_to_string(accepted_vals, (int)size_set), (int)size_set); fflush(stdout);
         }else{
             return 1;
         }
