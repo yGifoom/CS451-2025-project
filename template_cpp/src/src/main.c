@@ -40,23 +40,23 @@ void tests(char* res, Parser* parser){
     testFifo(fifo_res, parser);
     printf("TEST FIFO: %s\n", fifo_res);
     free(fifo_res);*/
-    
+    /*
     char* node_res = malloc(sizeof(char) * 50);
     testNodeSeq(node_res, parser);
     printf("Test NodeSeq: %s\n", node_res);
     free(node_res);
-    
+    */
     /*
     char* ba_res = malloc(sizeof(char) * 50);
     testBa(ba_res, parser);
     printf("Test testBa: %s\n", ba_res);
     free(ba_res);*/
 
-    /*
+    /**/
     char* la_res = malloc(sizeof(char) * 50);
     testLa(la_res, parser);
     printf("Test testLa: %s\n", la_res);
-    free(la_res);*/
+    free(la_res);
 
     return;
 }
