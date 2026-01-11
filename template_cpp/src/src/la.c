@@ -484,23 +484,59 @@ int la_recv_routine(la* la){
                 }
             }
 
-            // deliver check
-            else if((la->buffered_proposals[buffer_idx].prop.n_acks > f && la->next_tbd == incoming_proposal->ID) 
-                || la->buffered_proposals[buffer_idx].prop.proposal_len >= la->ds){
-                printf("%zu-LA RECV ROUTINE: delivery in order of id:%d, retransmit: %d\n", la->pid, incoming_proposal->ID, la->buffered_proposals[buffer_idx].prop.restransmits); fflush(stdout);
-                int deliver_res = la_deliver(la, incoming_proposal->ID);
-                if (deliver_res != 0){
-                    printf("%zu-LA RECV ROUTINE: error in delivery of id:%d, code: %d\n", la->pid, incoming_proposal->ID, deliver_res); fflush(stdout);
+            // Check if we can mark as ready for delivery (enough acks OR proposal is full)
+            bool ready_for_delivery = (la->buffered_proposals[buffer_idx].prop.n_acks > f) 
+                                   || (la->buffered_proposals[buffer_idx].prop.proposal_len >= la->ds);
+            
+            if(ready_for_delivery){
+                la->buffered_proposals[buffer_idx].prop.active = false;
+                printf("%zu-LA RECV ROUTINE: marking ready for delivery id:%d, retransmit: %d, n_acks: %d, proposal_len: %d\n", 
+                    la->pid, incoming_proposal->ID, la->buffered_proposals[buffer_idx].prop.restransmits,
+                    la->buffered_proposals[buffer_idx].prop.n_acks, la->buffered_proposals[buffer_idx].prop.proposal_len); fflush(stdout);
+            }
+            
+            // Try to deliver all consecutive ready proposals starting from next_tbd
+            if(atomic_load(&la->next_tbd) == incoming_proposal->ID || ready_for_delivery){
+                int tbd_idx = translate_index_buffer(la, atomic_load(&la->next_tbd), BUFFERED_PROPOSALS);
+                
+                // Release current lock if we're starting from a different index
+                if(tbd_idx != buffer_idx){
                     pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
-                    pthread_mutex_unlock(&la->reciever_buffer_mutex);
-                    if(frame_is_from_future) free(frame);
-                    continue;
+                    if(tbd_idx >= 0 && tbd_idx < BUFFERED_PROPOSALS){
+                        pthread_mutex_lock(&la->buffered_proposals[tbd_idx].prop_lock);
+                    }
                 }
                 
-                pthread_mutex_unlock(&la->buffered_proposals[buffer_idx].prop_lock);
+                while(tbd_idx >= 0 && tbd_idx < BUFFERED_PROPOSALS && 
+                      la->buffered_proposals[tbd_idx].prop.active == false){
+                    
+                    int current_tbd = atomic_load(&la->next_tbd);
+                    printf("%zu-LA RECV ROUTINE: delivery in order of id:%d\n", la->pid, current_tbd); fflush(stdout);
+                    
+                    int deliver_res = la_deliver(la, current_tbd);
+                    if (deliver_res != 0){
+                        printf("%zu-LA RECV ROUTINE: error in delivery of id:%d, code: %d\n", la->pid, current_tbd, deliver_res); fflush(stdout);
+                        pthread_mutex_unlock(&la->buffered_proposals[tbd_idx].prop_lock);
+                        break;
+                    }
+                    
+                    pthread_mutex_unlock(&la->buffered_proposals[tbd_idx].prop_lock);
+                    atomic_fetch_add(&la->next_tbd, 1);
+                    
+                    // Get next index
+                    tbd_idx = translate_index_buffer(la, atomic_load(&la->next_tbd), BUFFERED_PROPOSALS);
+                    if(tbd_idx >= 0 && tbd_idx < BUFFERED_PROPOSALS){
+                        pthread_mutex_lock(&la->buffered_proposals[tbd_idx].prop_lock);
+                    }
+                }
+                
+                // Unlock if we still hold a lock
+                if(tbd_idx >= 0 && tbd_idx < BUFFERED_PROPOSALS){
+                    pthread_mutex_unlock(&la->buffered_proposals[tbd_idx].prop_lock);
+                }
+                
                 pthread_mutex_unlock(&la->reciever_buffer_mutex);
 
-                atomic_fetch_add(&la->next_tbd, 1);
                 if(atomic_load(&la->next_tbd) > (atomic_load(&la->round) * BUFFERED_PROPOSALS) && la->round > 0 && atomic_load(&la->next_tbd) <= la->proposals_len){
                     printf("%zu-LA RECV ROUTINE: loading next proposals\n", la->pid); fflush(stdout);
 
@@ -509,7 +545,6 @@ int la_recv_routine(la* la){
                         // in case total rounds is not a multiple of buffered props 
                     }
                     remaining_queries_from_future = true; // finish unfinished business
-
                 }
 
                 if(frame_is_from_future) free(frame);
@@ -543,23 +578,16 @@ int la_deliver(la* la, int ID){
         return 1;
     }
 
-    if(la->buffered_proposals[buffer_index].prop.active){
-        la->buffered_proposals[buffer_index].prop.active = false;
-    }else{
-        return 1;
-    }
-
     size_t num_elements = (size_t)la->buffered_proposals[buffer_index].prop.proposal_len;
     size_t size_in_bytes = num_elements * sizeof(int);
     int* delivered_set = malloc(size_in_bytes);
     
     if(delivered_set == NULL){
-        la->buffered_proposals[buffer_index].prop.active = true;
         return 1;
     }
     memcpy(delivered_set, la->buffered_proposals[buffer_index].prop.proposed_data, size_in_bytes);
 
-    printf("%zu-LA DELIVER: buffered_proposals at idx %d has %d\n",la->pid, buffer_index, la->buffered_proposals[buffer_index].prop.proposed_data[0]);fflush(stdout);
+    printf("%zu-LA DELIVER: buffered_proposals at idx %d\n",la->pid, buffer_index);fflush(stdout);
     char log_buffer[4096];
     int offset = snprintf(log_buffer, sizeof(log_buffer), "%zu-LA DELIVER: idx: %d, for ID %d, size decision: %zu [", la->pid, buffer_index, ID, num_elements);
     for (size_t i = 0; i < num_elements && offset < (int)sizeof(log_buffer) - 10; i++) {
