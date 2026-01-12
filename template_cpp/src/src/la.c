@@ -17,7 +17,7 @@
 #include"utils.h"
 
 
-static const int BUFFERED_PROPOSALS = 1;
+static const int BUFFERED_PROPOSALS = 8;
 static const int CONGESTION_CONTROL = 0;
 static const int BUFFERSIZE = 512;
 static const long TIMEOUT_QUEUE_POP = 1000; // in ms
@@ -286,13 +286,14 @@ int la_send_routine(la* la){
         
 
     }
+    
     return 0;
 }
 
 int la_recv_routine(la* la){
     // init
     int popped[BUFFERSIZE];
-    int msgSize;
+    size_t msgSize;  // Changed from int to size_t to match pflx_recv and queue_pop_timed signatures
     int len_of_proposal = 0;
     int f = (int)la->pflx_layer->phonebook_size / 2;
     bool remaining_queries_from_future = false;
@@ -315,7 +316,7 @@ int la_recv_routine(la* la){
 
         // POP EITHER FROM FUTURE PROPOSALS OR PFLX INTERFACE
         if(remaining_queries_from_future){
-            int res = queue_pop_timed(la->future_proposals, &popped_future, (size_t*)&msgSize, TIMEOUT_QUEUE_POP / 10);
+            int res = queue_pop_timed(la->future_proposals, &popped_future, &msgSize, TIMEOUT_QUEUE_POP / 10);
             if (res != 0){
                 if (res == ETIMEDOUT){
                     printf("%zu-LA RECV ROUTINE: future_proposals timed out, no more unfinished business\n", la->pid); fflush(stdout);
@@ -328,12 +329,12 @@ int la_recv_routine(la* la){
             }
             frame = (int*)popped_future;
 
-            printf("%zu-LA RECV ROUTINE: popping from future_proposals gave id:%d, retransmits:%d, from:%d array size is: %d, array is:%s,\n", la->pid, 
+            printf("%zu-LA RECV ROUTINE: popping from future_proposals gave id:%d, retransmits:%d, from:%d array size is: %zu, array is:%s,\n", la->pid, 
                 frame[LA_ID_HID], frame[LA_RETRANSMIT_HID], frame[LA_ORIGIN_ID_HID], msgSize,
                 array_to_string(frame, frame[LA_SIZE_PROPOSAL_HID])); fflush(stdout);
             frame_is_from_future = true;
         }else{
-            int res = pflx_recv(la->pflx_layer, popped, (size_t*)&msgSize);
+            int res = pflx_recv(la->pflx_layer, popped, &msgSize);
             
             if (res != 0){
                 if (res == ETIMEDOUT){
@@ -367,16 +368,20 @@ int la_recv_routine(la* la){
         if (buffer_idx == -1){
             printf("%zu-LA RECV ROUTINE: recieved future ID: %d, type: %d, round: %d, from:%d, BUFFERED_PROPOSALS: %d \n", la->pid, incoming_proposal->ID, incoming_proposal->type_of_msg, atomic_load(&la->round), frame[LA_ORIGIN_ID_HID], BUFFERED_PROPOSALS); fflush(stdout);
             size_t frame_size = sizeof(int) * (size_t)(frame[LA_SIZE_PROPOSAL_HID] + LA_FRAME_HEADER_SIZE);
-            int* frame_cpy = malloc(frame_size);
-            if(frame_cpy == NULL){
-                printf("%zu-LA RECV ROUTINE: PANIC, failed to alloc after recieved future ID: %d, type: %d, round: %d, from:%d, BUFFERED_PROPOSALS: %d \n", la->pid, incoming_proposal->ID, incoming_proposal->type_of_msg, atomic_load(&la->round), frame[LA_ORIGIN_ID_HID], BUFFERED_PROPOSALS); fflush(stdout);
-                if(frame_is_from_future) free(frame);
-                return 1;
-            }
-            memcpy(frame_cpy, frame, frame_size);
-            queue_push(la->future_proposals, frame_cpy, frame_size);
+            //int* frame_cpy = malloc(frame_size);
+            //if(frame_cpy == NULL){
+            //    printf("%zu-LA RECV ROUTINE: PANIC, failed to alloc after recieved future ID: %d, type: %d, round: %d, from:%d, BUFFERED_PROPOSALS: %d \n", la->pid, incoming_proposal->ID, incoming_proposal->type_of_msg, atomic_load(&la->round), frame[LA_ORIGIN_ID_HID], BUFFERED_PROPOSALS); fflush(stdout);
+            //    if(frame_is_from_future) free(frame);
+            //    return 1;
+            //}
+            //memcpy(frame_cpy, frame, frame_size);
 
-            printf("%zu-LA RECV ROUTINE: putting into future_proposals %s of size %zu\n", la->pid, array_to_string(frame_cpy, (int)frame_size / (int)sizeof(int)), frame_size); fflush(stdout);
+            // return to the network, use it as storage
+            //queue_push(la->future_proposals, frame_cpy, frame_size);
+
+            pflx_send(la->pflx_layer, frame, frame_size, la->pid, (size_t)frame[LA_ORIGIN_ID_HID]);
+
+            printf("%zu-LA RECV ROUTINE: putting into future_proposals %s of size %zu\n", la->pid, array_to_string(frame, (int)frame_size / (int)sizeof(int)), frame_size); fflush(stdout);
             
 
             pthread_mutex_unlock(&la->reciever_buffer_mutex);
@@ -541,6 +546,10 @@ int la_recv_routine(la* la){
                       la->buffered_proposals[tbd_idx].prop.active == false){
                     
                     int current_tbd = atomic_load(&la->next_tbd);
+                    if (current_tbd > la->proposals_len){
+                        pthread_mutex_unlock(&la->buffered_proposals[tbd_idx].prop_lock);
+                        break;
+                    }
                     printf("%zu-LA RECV ROUTINE: delivery in order of id:%d\n", la->pid, current_tbd); fflush(stdout);
                     
                     int deliver_res = la_deliver(la, current_tbd);
@@ -574,7 +583,7 @@ int la_recv_routine(la* la){
                     if(res_loading_proposals != 0){
                         // in case total rounds is not a multiple of buffered props 
                     }
-                    remaining_queries_from_future = true; // finish unfinished business
+                    remaining_queries_from_future = false; // don't finish unfinished business
                 }
 
                 if(frame_is_from_future) free(frame);
@@ -708,6 +717,10 @@ int la_destroy(la* la_layer){
     }
     if (la_layer->downQueue) {
         queue_destroy(la_layer->downQueue);
+    }
+
+    if(la_layer->future_proposals){
+        queue_destroy(la_layer->future_proposals);
     }
 
     for(int i = 0; i < BUFFERED_PROPOSALS; i++){

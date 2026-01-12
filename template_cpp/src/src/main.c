@@ -4,7 +4,7 @@
 #include "../include_tests/tests.h"
 #include"node.h"
 
-const int TESTING = 1;
+const int TESTING = 0;
 
 void tests(char* res, Parser* parser){
     /*
@@ -44,8 +44,8 @@ void tests(char* res, Parser* parser){
     char* node_res = malloc(sizeof(char) * 50);
     testNodeSeq(node_res, parser);
     printf("Test NodeSeq: %s\n", node_res);
-    free(node_res);
-    */
+    free(node_res);*/
+    
     /*
     char* ba_res = malloc(sizeof(char) * 50);
     testBa(ba_res, parser);
