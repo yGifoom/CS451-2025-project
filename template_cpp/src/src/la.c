@@ -295,7 +295,7 @@ int la_recv_routine(la* la){
     int popped[BUFFERSIZE];
     size_t msgSize;  // Changed from int to size_t to match pflx_recv and queue_pop_timed signatures
     int len_of_proposal = 0;
-    int f = (int)la->pflx_layer->phonebook_size / 2;
+    int f = ((int)la->pflx_layer->phonebook_size - 1) / 2;
     bool remaining_queries_from_future = false;
     int* frame = NULL;
     void* popped_future = NULL;
@@ -821,6 +821,11 @@ int proposal_load_next(la* la_layer, int buffer_size){
             num_tokens++;
         }
         
+        if (la_layer->pflx_layer->phonebook_size == 2){
+            memcpy(la_layer->buffered_proposals[i].accepted_values, la_layer->buffered_proposals[i].prop.proposed_data, (size_t)la_layer->buffered_proposals[i].prop.proposal_len * sizeof(int));
+            la_layer->buffered_proposals[i].accepted_len = la_layer->buffered_proposals[i].prop.proposal_len;
+        }
+
         // create proposal and send it
         la_handle* handle = la_handle_init(ID, 0, 0, LA_PROPOSAL_TYPE);
         if(handle == NULL){
